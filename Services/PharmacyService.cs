@@ -137,16 +137,40 @@ COMMIT TRANSACTION;";
                 {
                     try
                     {
+                        // The owner's UserId is read first, because the Pharmacies row
+                        // is the only thing that points at it and that row is about to go.
+                        int ownerId;
+                        using (SqlCommand read = new SqlCommand(
+                            "SELECT OwnerId FROM Pharmacies WHERE PharmacyId = @Id;", conn, tx))
+                        {
+                            read.Parameters.AddWithValue("@Id", pharmacyId);
+                            object value = read.ExecuteScalar();
+                            ownerId = value == null || value == DBNull.Value ? 0 : Convert.ToInt32(value);
+                        }
+
                         ExecuteInTx(conn, tx,
                             "DELETE FROM Offers WHERE MedicineId IN (SELECT MedicineId FROM Medicines WHERE PharmacyId = @Id);", pharmacyId);
                         ExecuteInTx(conn, tx,
                             "DELETE FROM Cart WHERE MedicineId IN (SELECT MedicineId FROM Medicines WHERE PharmacyId = @Id);", pharmacyId);
                         ExecuteInTx(conn, tx,
                             "DELETE FROM Medicines WHERE PharmacyId = @Id;", pharmacyId);
-                        ExecuteInTx(conn, tx,
-                            "DELETE FROM Users WHERE UserId = (SELECT OwnerId FROM Pharmacies WHERE PharmacyId = @Id);", pharmacyId);
+
+                        // Pharmacies before Users. FK_Pharmacies_Owner points from
+                        // Pharmacies to Users and has no ON DELETE CASCADE, so removing
+                        // the owner while the shop row still references it is a foreign
+                        // key violation and the whole transaction rolls back.
                         ExecuteInTx(conn, tx,
                             "DELETE FROM Pharmacies WHERE PharmacyId = @Id;", pharmacyId);
+
+                        if (ownerId != 0)
+                        {
+                            using (SqlCommand removeOwner = new SqlCommand(
+                                "DELETE FROM Users WHERE UserId = @OwnerId;", conn, tx))
+                            {
+                                removeOwner.Parameters.AddWithValue("@OwnerId", ownerId);
+                                removeOwner.ExecuteNonQuery();
+                            }
+                        }
 
                         tx.Commit();
                         message = "Pharmacy deleted.";
