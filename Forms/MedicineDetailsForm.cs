@@ -34,8 +34,17 @@ namespace PharmaLinkApp.Forms
         private void MedicineDetailsForm_Load(object sender, EventArgs e)
         {
             ApplyTheme();
-            LoadMedicine();
-            LoadReviews();
+            try
+            {
+                LoadMedicine();
+                LoadReviews();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("This medicine could not be loaded.\r\n\r\n" + ex.Message,
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Close();
+            }
         }
 
         private void ApplyTheme()
@@ -225,17 +234,26 @@ namespace PharmaLinkApp.Forms
                 return;
             }
 
-            string message;
-            if (_cart.AddOrIncrease(UserSession.UserId, _medicineId, quantity, out message))
+            try
             {
-                txtQuantity.BackColor = Color.White;
-                lblAddMessage.Text = quantity + " added to your cart.";
-                lblAddMessage.ForeColor = UiTheme.Success;
-                lblAddMessage.Visible = true;
+                string message;
+                if (_cart.AddOrIncrease(UserSession.UserId, _medicineId, quantity, out message))
+                {
+                    txtQuantity.BackColor = Color.White;
+                    lblAddMessage.Text = quantity + " added to your cart.";
+                    lblAddMessage.ForeColor = UiTheme.Success;
+                    lblAddMessage.Visible = true;
+                }
+                else
+                {
+                    lblAddMessage.Text = message;
+                    lblAddMessage.ForeColor = UiTheme.Danger;
+                    lblAddMessage.Visible = true;
+                }
             }
-            else
+            catch (Exception ex)
             {
-                lblAddMessage.Text = message;
+                lblAddMessage.Text = ex.Message;
                 lblAddMessage.ForeColor = UiTheme.Danger;
                 lblAddMessage.Visible = true;
             }

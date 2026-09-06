@@ -29,9 +29,18 @@ namespace PharmaLinkApp.Forms
         private void GiveRatingForm_Load(object sender, EventArgs e)
         {
             ApplyTheme();
-            LoadReviewableItems();
-            UpdateCharCount();
-            ValidateAll();
+            try
+            {
+                LoadReviewableItems();
+                UpdateCharCount();
+                ValidateAll();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("The medicines on this order could not be loaded.\r\n\r\n" + ex.Message,
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Close();
+            }
         }
 
         private void ApplyTheme()
@@ -189,19 +198,27 @@ namespace PharmaLinkApp.Forms
         {
             if (!ValidateAll()) return;
 
-            string message;
-            if (_reviews.AddReview(UserSession.UserId, SelectedMedicineId(), _orderId,
-                                   _rating, txtComment.Text.Trim(), out message))
+            try
             {
-                MessageBox.Show(message, "Review posted", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                DialogResult = DialogResult.OK;
-                Close();
+                string message;
+                if (_reviews.AddReview(UserSession.UserId, SelectedMedicineId(), _orderId,
+                                       _rating, txtComment.Text.Trim(), out message))
+                {
+                    MessageBox.Show(message, "Review posted", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+                else
+                {
+                    MessageBox.Show(message, "Review not posted", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    LoadReviewableItems();
+                    ValidateAll();
+                }
             }
-            else
+            catch (Exception ex)
             {
-                MessageBox.Show(message, "Review not posted", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                LoadReviewableItems();
-                ValidateAll();
+                MessageBox.Show("The review could not be saved.\r\n\r\n" + ex.Message,
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using PharmaLinkApp.Database;
 using PharmaLinkApp.Forms;
 
 namespace PharmaLinkApp
@@ -31,18 +32,22 @@ namespace PharmaLinkApp
         {
             string message;
 
-            if (ex is SqlException sql && (sql.Number == 53 || sql.Number == 4060 ||
-                                           sql.Number == 18456 || sql.Number == -2))
+            if (ex is DataAccessException)
             {
-                message =
-                    "PharmaLink could not reach the database.\r\n\r\n" +
-                    "Check that SQL Server is running, that PharmaLinkDB has been created from " +
-                    "PharmaLinkDB_Setup.sql, and that the connection string in App.config points " +
-                    "at the right server.\r\n\r\n" + sql.Message;
+                // DbHelper has already translated the SqlException into English.
+                message = ex.Message;
             }
-            else if (ex is SqlException other)
+            else if (ex is SqlException sql)
             {
-                message = "The database refused the last operation.\r\n\r\n" + other.Message;
+                // A SqlException that did not come through DbHelper, which means
+                // a service opened its own connection for a transaction.
+                message = sql.Number == 53 || sql.Number == 4060 ||
+                          sql.Number == 18456 || sql.Number == -2 || sql.Number == -1
+                    ? "PharmaLink could not reach the database.\r\n\r\n" +
+                      "Check that SQL Server is running, that PharmaLinkDB has been created from " +
+                      "PharmaLinkDB_Setup.sql, and that the connection string in App.config points " +
+                      "at the right server.\r\n\r\n" + sql.Message
+                    : "The database refused the last operation.\r\n\r\n" + sql.Message;
             }
             else
             {
