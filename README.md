@@ -1460,16 +1460,15 @@ What the group takes away is that **the design decides how hard the coding will 
 
 **Video link:** REPLACE_WITH_YOUR_VIDEO_LINK
 
-The recording is narrated in our own voices. Each member records and speaks over the part of the system they built, and the timestamps below are the marker the examiner uses to find that member's segment.
+The recording is narrated in our own voices. Each member records and speaks over the part of the project they worked on, matching the contribution table in [Section 16](#16-team-contribution), and the timestamps below are the marker the examiner uses to find that member's segment.
 
 | # | Segment | Member | Start | End |
 |---|---------|--------|-------|-----|
-| 0 | Project introduction, domain and architecture | *(fill in)* | 00:00 | |
-| 1 | Database: schema walkthrough, one JOIN / GROUP BY query explained live | Nafiul Islam | | |
-| 2 | Super Admin: approve a pharmacy, low-rated report, moderate a review | Md Arafat Rahman | | |
-| 3 | Pharmacy Owner: medicine CRUD, validation failure, low-stock alert, earnings | Muhtasim Mahin | | |
-| 4 | Customer: search and filter, cart across two pharmacies, checkout, invoice, rating | Shohidur Raza Sujon | | |
-| 5 | Data isolation demonstrated: log in as a second owner, show the other shop's data is unreachable | *(fill in)* | | |
+| 0 | Introduction, case study, functional requirements and user stories | Nafiul Islam | 00:00 | |
+| 1 | Database: schema, normalization to third normal form, one JOIN / GROUP BY query explained live | Md Arafat Rahman | | |
+| 2 | ER and navigation diagrams; Super Admin and Admin screens | Muhtasim Mahin | | |
+| 3 | Customer screens: search and filter, cart across two pharmacies, checkout, invoice, rating | Shohidur Raza Sujon | | |
+| 4 | Data isolation demonstrated: log in as a second owner, show the other shop's data is unreachable | *(fill in)* | | |
 
 > **Before recording, fill in the two `REPLACE_WITH_YOUR_VIDEO_LINK` placeholders** — one here and one in [Quick Links](#quick-links) — and complete the start and end columns above. The viva announcement asks for a link with your own voice and your individual timestamp, so an unfilled table is a failed check.
 
