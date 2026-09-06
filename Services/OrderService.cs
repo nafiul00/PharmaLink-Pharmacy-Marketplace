@@ -318,25 +318,53 @@ WHERE   OrderId = @OrderId
                 DbHelper.P("@PharmacyId", pharmacyId)) == 1;
         }
 
-        /// <summary>Cancelling puts the stock back on the shelf, inside one transaction.</summary>
+        /// <summary>
+        /// Cancelling puts the stock back on the shelf, inside one transaction.
+        ///
+        /// Both statements are guarded by the same condition on purpose. An
+        /// earlier version restocked whenever the order was not already
+        /// cancelled but only flipped the status when it was not delivered, so
+        /// cancelling a delivered order returned the units to stock and left the
+        /// order reading Delivered. The eligibility test is now made once, in
+        /// the database, and both statements sit behind it.
+        /// </summary>
         public bool Cancel(int orderId, int pharmacyId)
         {
             const string sql = @"
-BEGIN TRANSACTION;
-    UPDATE  m SET m.Stock = m.Stock + oi.Quantity
-    FROM    Medicines m INNER JOIN OrderItems oi ON oi.MedicineId = m.MedicineId
-    WHERE   oi.OrderId = @OrderId
-      AND   EXISTS (SELECT 1 FROM Orders o
-                    WHERE o.OrderId = @OrderId AND o.PharmacyId = @PharmacyId
-                      AND o.Status <> 'Cancelled');
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
 
-    UPDATE  Orders SET Status = 'Cancelled'
-    WHERE   OrderId = @OrderId AND PharmacyId = @PharmacyId AND Status <> 'Delivered';
-COMMIT TRANSACTION;";
+    DECLARE @Cancelled INT = 0;
 
-            return _db.ExecuteNonQuery(sql,
+    IF EXISTS (SELECT 1 FROM Orders
+               WHERE OrderId    = @OrderId
+                 AND PharmacyId = @PharmacyId
+                 AND Status NOT IN ('Delivered', 'Cancelled'))
+    BEGIN
+        UPDATE  m SET m.Stock = m.Stock + oi.Quantity
+        FROM    Medicines m INNER JOIN OrderItems oi ON oi.MedicineId = m.MedicineId
+        WHERE   oi.OrderId = @OrderId;
+
+        UPDATE  Orders SET Status = 'Cancelled'
+        WHERE   OrderId    = @OrderId
+          AND   PharmacyId = @PharmacyId
+          AND   Status NOT IN ('Delivered', 'Cancelled');
+
+        SET @Cancelled = @@ROWCOUNT;
+    END
+
+    COMMIT TRANSACTION;
+    SELECT @Cancelled;
+END TRY
+BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;";
+
+            return _db.ExecuteScalarInt(sql,
                 DbHelper.P("@OrderId", orderId),
-                DbHelper.P("@PharmacyId", pharmacyId)) > 0;
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
         }
 
         public bool OrderBelongsToCustomer(int orderId, int customerId)

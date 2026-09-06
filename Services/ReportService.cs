@@ -25,9 +25,12 @@ namespace PharmaLinkApp.Services
         /// Requirements 5 and 13. Pass pharmacyId = 0 for the platform wide
         /// report, or a real PharmacyId for one owner's own report.
         ///
-        /// Commission is recomputed from the pharmacy's rate rather than summed
-        /// from Orders, because the join to OrderItems multiplies the order rows
-        /// and a plain SUM of the header column would inflate it.
+        /// Commission is the frozen Orders.CommissionAmount, the same figure the
+        /// owner's own earnings tiles read, so the two screens can never disagree
+        /// after a Super Admin changes a commission rate. Order level and item
+        /// level figures are aggregated in separate derived tables because the
+        /// join to OrderItems multiplies the order rows, which would inflate any
+        /// SUM taken from the order header.
         /// </summary>
         public DataTable GetEarnings(int pharmacyId, DateTime fromDate, DateTime toDate, string area, string status)
         {
@@ -35,23 +38,38 @@ namespace PharmaLinkApp.Services
 SELECT  ph.PharmacyId,
         ph.PharmacyName,
         ph.Area,
-        COUNT(DISTINCT o.OrderId)                                            AS TotalOrders,
-        SUM(oi.Quantity)                                                     AS UnitsSold,
-        SUM(oi.Subtotal)                                                     AS GrossSales,
-        CAST(SUM(oi.Subtotal) * ph.CommissionRate / 100.0 AS DECIMAL(12,2))  AS PlatformCommission,
-        CAST(SUM(oi.Subtotal) * (1 - ph.CommissionRate / 100.0) AS DECIMAL(12,2)) AS NetEarnings,
-        CAST(AVG(oi.UnitPrice) AS DECIMAL(10,2))                             AS AverageItemPrice,
+        ord.TotalOrders,
+        itm.UnitsSold,
+        itm.GrossSales,
+        ord.PlatformCommission,
+        CAST(itm.GrossSales - ord.PlatformCommission AS DECIMAL(12,2)) AS NetEarnings,
+        itm.AverageItemPrice,
         ph.CommissionRate
 FROM    Pharmacies ph
-        INNER JOIN Orders     o  ON o.PharmacyId = ph.PharmacyId
-        INNER JOIN OrderItems oi ON oi.OrderId   = o.OrderId
-WHERE   o.Status <> 'Cancelled'
-  AND   o.OrderDate BETWEEN @FromDate AND @ToDate
-  AND   (@PharmacyId = 0  OR ph.PharmacyId = @PharmacyId)
+        -- one row per pharmacy, counted at order level so the commission
+        -- frozen on each order header is summed exactly once
+        INNER JOIN (SELECT  o.PharmacyId,
+                            COUNT(*)                                       AS TotalOrders,
+                            CAST(SUM(o.CommissionAmount) AS DECIMAL(12,2)) AS PlatformCommission
+                    FROM    Orders o
+                    WHERE   o.Status <> 'Cancelled'
+                      AND   o.OrderDate BETWEEN @FromDate AND @ToDate
+                      AND   (@Status = '' OR o.Status = @Status)
+                    GROUP BY o.PharmacyId) ord ON ord.PharmacyId = ph.PharmacyId
+        -- and one row per pharmacy at line item level for the item figures
+        INNER JOIN (SELECT  o.PharmacyId,
+                            SUM(oi.Quantity)                          AS UnitsSold,
+                            CAST(SUM(oi.Subtotal) AS DECIMAL(12,2))   AS GrossSales,
+                            CAST(AVG(oi.UnitPrice) AS DECIMAL(10,2))  AS AverageItemPrice
+                    FROM    Orders o
+                            INNER JOIN OrderItems oi ON oi.OrderId = o.OrderId
+                    WHERE   o.Status <> 'Cancelled'
+                      AND   o.OrderDate BETWEEN @FromDate AND @ToDate
+                      AND   (@Status = '' OR o.Status = @Status)
+                    GROUP BY o.PharmacyId) itm ON itm.PharmacyId = ph.PharmacyId
+WHERE   (@PharmacyId = 0  OR ph.PharmacyId = @PharmacyId)
   AND   (@Area       = '' OR ph.Area       = @Area)
-  AND   (@Status     = '' OR o.Status      = @Status)
-GROUP BY ph.PharmacyId, ph.PharmacyName, ph.Area, ph.CommissionRate
-ORDER BY GrossSales DESC;";
+ORDER BY itm.GrossSales DESC;";
 
             return _db.ExecuteTable(sql,
                 DbHelper.P("@PharmacyId", pharmacyId),
