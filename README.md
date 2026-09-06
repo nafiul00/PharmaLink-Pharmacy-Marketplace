@@ -1428,14 +1428,12 @@ All captures live in [`docs/screenshots/`](docs/screenshots) and are taken again
 
 ## 16. Team Contribution
 
-| Member | ID | Contribution |
-|--------|-----|--------------|
-| Nafiul Islam | 21-45717-3 | Database design and normalisation, `PharmaLinkDB_Setup.sql`, `DbHelper`, `OrderService` (transactional checkout), report Sections 5–8 |
-| Md Arafat Rahman | 22-47910-2 | Super Admin branch: dashboard, Manage Pharmacies, Manage Users, Categories, Moderate Reviews, `PharmacyService`, `ReviewService` |
-| Muhtasim Mahin | 23-53789-3 | Pharmacy Owner branch: dashboard, medicine CRUD and editor modal, inventory, earnings, offers, prescriptions, `MedicineService`, `OfferService`, `ReportService` |
-| Shohidur Raza Sujon | 22-49449-3 | Customer branch: home and filters, details, cart, checkout, invoice, order history, ratings, `CartService`, `PrescriptionService`, `UiTheme` and validation |
-
-Login, sign up, `UserSession`, `PasswordHelper` and this report were done jointly.
+| Name | ID | Contribution |
+|------|-----|--------------|
+| Nafiul Islam | 21-45717-3 | Case study, functional requirements, user stories, README assembly |
+| Md Arafat Rahman | 22-47910-2 | Database design, normalization, SQL schema diagram, schema.sql, feature queries |
+| Muhtasim Mahin | 23-53789-3 | UI navigation diagram, ER diagram, form designs (Super Admin and Admin) |
+| Shohidur Raza Sujon | 22-49449-3 | Form designs (Customer), report compilation, proofreading |
 
 ---
 
