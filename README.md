@@ -1327,7 +1327,7 @@ Two other settings live in `App.config`:
 ### Step 3 — Build and run
 
 ```bash
-git clone https://github.com/<your-username>/PharmaLink-Pharmacy-Marketplace.git
+git clone https://github.com/nafiul00/PharmaLink-Pharmacy-Marketplace.git
 cd PharmaLink-Pharmacy-Marketplace
 dotnet restore
 dotnet run
