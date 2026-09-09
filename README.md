@@ -1434,7 +1434,7 @@ Contribution is 25% each.
 |------|-----|--------------|
 | Nafiul Islam | 21-45717-3 | **Design and documentation:** case study, functional requirements, user stories, README assembly.<br>**Implementation:** login, sign up and role routing (`LoginForm`, `SignUpForm`, `AuthService`, `UserSession`); Pharmacy Owner branch — medicine CRUD (`AdminMedicineForm`, `MedicineEditorForm`, `MedicineService`), stock and inventory with the low-stock alert (`AdminInventoryForm`), earnings and sales report (`AdminEarningsForm`, `ReportService`), discount offers (`DiscountOffersForm`, `OfferService`) |
 | Md Arafat Rahman | 22-47910-2 |PharmaLinkDB_Setup.sql, DbHelper, ReportService, SuperAdminSalesReportForm, AdminEarningsForm, SuperAdminLowRatedShopsForm. Core questions: the ten tables and their relationships, normalisation to 3NF, WHERE versus HAVING, the CAST inside AVG.
-| Muhtasim Mahin | 23-53789-3 | UI navigation diagram, ER diagram, form designs (Super Admin and Admin) |
+| Muhtasim Mahin | 23-53789-3 |MedicineService, AdminMedicineForm, MedicineEditorForm, AdminInventoryForm, OfferService, DiscountOffersForm, CategoryService, ManageCategoriesForm, PharmacyService. Core questions: CRUD scoped by PharmacyId, the Stock < MinStock alert.
 | Shohidur Raza Sujon | 22-49449-3 | Form designs (Customer), report compilation, proofreading |
 
 Rows 2 to 4 record design and documentation ownership. Each member adds their own
