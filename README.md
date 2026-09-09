@@ -1381,10 +1381,8 @@ All captures live in [`docs/screenshots/`](docs/screenshots) and are taken again
 
 | Screen | Image |
 |--------|-------|
-| Login, with inline validation | ![Login](<img width="1176" height="820" alt="Screenshot 2026-09-08 014935" src="https://github.com/user-attachments/assets/f933c7fc-4737-4ecb-9b67-838fef67bd6f" />
-) |
-| Sign up as a pharmacy owner | ![Sign up](<img width="1155" height="936" alt="Screenshot 2026-09-08 021545" src="https://github.com/user-attachments/assets/97cd778d-450a-45a3-a6e8-50c7c8ab8373" />
-) |
+| Login, with inline validation | ![Login](docs/screenshots/01-login.png) |
+| Sign up as a pharmacy owner | ![Sign up](docs/screenshots/02-signup.png) |
 
 ### Super Admin
 
