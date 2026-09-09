@@ -257,6 +257,7 @@ The Offers screen runs a query that returns only offers where today falls betwee
 
 **27. As a Customer, I can change my password, so that my account stays secure.**
 The My Profile form has a Change Password panel asking for the current password, a new password and a confirmation. The new password must be at least six characters and contain at least one digit, and the two new entries must match. The current password is verified against the stored salted SHA-256 hash before anything is written, and on success only `Users.PasswordHash` and `Users.PasswordSalt` are updated. Plain text passwords are never stored or logged.
+
 ---
 
 ## 5. ER Diagram
