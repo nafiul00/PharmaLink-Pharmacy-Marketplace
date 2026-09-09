@@ -248,13 +248,15 @@ If the cart contains a medicine with `RequiresRx` set, the Confirm Order step op
 
 **24. As a Customer, I can look back at my past orders, so that I can reorder the same medicine and show a bill if something is wrong.**
 Order History lists every order with its date, the selling pharmacy, the number of line items, the total paid, the payment method and a status pill, filtered by status, pharmacy and date range through three ComboBox controls. View Invoice reopens the printable bill for the selected order. Because an order that spans two pharmacies was split at checkout, each pharmacy's delivery appears as its own row with its own invoice, which is what the customer actually received.
-**25. . A Customer can comment about reliability of a pharmacy after taking delivery of a medicine, so others can know if it is reliable or not.
-Rate and Review button is available only for Orders which have status 'Delivered' and not yet been reviewed. It presents a modal containing a one-to-five star ratings selector and a comment box of maximum 500 characters; the Submit button will only be enabled if a rating is selected. The `UNIQUE` constraint prevents the same purchase being rated twice and retrieves the customer id, medicine id and order id when using inserts to insert a row into the table Reviews.
 
-**26.. As a Customer, I can see today's offers, so that I can buy my regular medicine when it is cheapest.**
-The Offers screen executes a query, returning only offers that have a `StartDate` that is earlier than today and an `EndDate` that is later than today, where the medicine is in stock, and where the pharmacy is Approved. The following grid contains the offer title, medicine, pharmacy, original price, discount percentage, calculated price that the customer will pay and last valid date. The query filters for Expired offers, as does the form – no stale offers can ever be shown.
+**25. As a Customer, I can rate a medicine after delivery, so that other patients know whether the pharmacy is reliable.**
+The Rate and Review button is enabled only for orders whose status is `'Delivered'` and that have not been reviewed yet. It opens a modal with a one to five star selector and a comment box limited to 500 characters; a rating must be chosen before Submit is enabled. Submit inserts a row into `Reviews` carrying the customer id, medicine id and order id, and the `UNIQUE` constraint on those three columns stops the same purchase being rated twice.
 
-**27.. As a Customer, I can change my password, so that my account stays secure. The My Profile form has a Change Password panel asking for the current password, a new password and a confirmation. The new password should be six or more characters long and include at least one numeral, and these two should be the same. To prevent any data from being written, the current pass is first compared to the stored salted SHA-256 hash; if it matches, then only Users are written.PasswordHash and Users.PasswordSalt are updated. No plain text password is kept or recorded.
+**26. As a Customer, I can see today's offers, so that I can buy my regular medicine when it is cheapest.**
+The Offers screen runs a query that returns only offers where today falls between `StartDate` and `EndDate`, the medicine is in stock and the pharmacy is Approved. The grid shows the offer title, medicine, pharmacy, original price, discount percentage, the calculated price the customer will pay and the last valid date. Expired offers are filtered out by the query rather than by the form, so nothing stale can ever be displayed.
+
+**27. As a Customer, I can change my password, so that my account stays secure.**
+The My Profile form has a Change Password panel asking for the current password, a new password and a confirmation. The new password must be at least six characters and contain at least one digit, and the two new entries must match. The current password is verified against the stored salted SHA-256 hash before anything is written, and on success only `Users.PasswordHash` and `Users.PasswordSalt` are updated. Plain text passwords are never stored or logged.
 ---
 
 ## 5. ER Diagram
