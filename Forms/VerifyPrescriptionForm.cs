@@ -192,10 +192,16 @@ namespace PharmaLinkApp.Forms
             {
                 // Loaded through a stream and copied, so the file is not locked
                 // and can still be replaced by a fresh upload.
+                // Image.FromFile would keep a LOCK on the file for as long as the Image
+                // object lives, so the customer could not replace a blurry prescription
+                // while the owner had it open. Reading through a stream and copying into
+                // a new Bitmap releases the file immediately: both using blocks dispose
+                // at the closing brace, and the Bitmap that survives holds pixels in
+                // memory rather than a handle to disk.
                 using (FileStream stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read))
                 using (Image original = Image.FromStream(stream))
                 {
-                    picPrescription.Image = new Bitmap(original);
+                    picPrescription.Image = new Bitmap(original);   // independent copy
                 }
             }
             catch (Exception ex)

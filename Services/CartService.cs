@@ -46,12 +46,23 @@ namespace PharmaLinkApp.Services
             }
 
             const string sql = @"
+-- MERGE does insert-or-update in ONE statement. Doing it as a SELECT followed by
+-- either an INSERT or an UPDATE would leave a gap between the two in which another
+-- request could insert the same line, and UQ_Cart_Line (CustomerId, MedicineId)
+-- would then reject it. One statement means one atomic decision.
 MERGE Cart AS target
+-- The source is a one row inline table built from the parameters, because MERGE
+-- requires a table expression to match against rather than bare values.
 USING (SELECT @CustomerId AS CustomerId, @MedicineId AS MedicineId, @Quantity AS Quantity) AS source
+    -- Match on exactly the columns UQ_Cart_Line makes unique, so 'already in the
+    -- basket' means precisely what the constraint means.
     ON  target.CustomerId = source.CustomerId
     AND target.MedicineId = source.MedicineId
+-- Already there: ADD to the quantity rather than replacing it, so pressing Add twice
+-- with quantity 2 leaves 4, which is what the customer expects.
 WHEN MATCHED THEN
     UPDATE SET target.Quantity = target.Quantity + source.Quantity
+-- Not there yet: create the line.
 WHEN NOT MATCHED THEN
     INSERT (CustomerId, MedicineId, Quantity)
     VALUES (source.CustomerId, source.MedicineId, source.Quantity);";

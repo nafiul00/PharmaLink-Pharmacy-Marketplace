@@ -17,11 +17,21 @@ namespace PharmaLinkApp
             // Anything a form fails to catch arrives here instead of killing the
             // process with the .NET crash dialog. By far the most likely cause is
             // SQL Server not running, so that case gets its own message.
+            // Route exceptions the UI thread failed to catch to our own handler instead
+            // of letting .NET show its crash dialog and kill the process.
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (sender, e) => ReportFatal(e.Exception);
+
+            // The second net, for anything thrown OFF the UI thread. Both are wired
+            // because they cover different cases and neither catches the other's.
             AppDomain.CurrentDomain.UnhandledException += (sender, e) => ReportFatal(e.ExceptionObject as Exception);
 
-            ApplicationConfiguration.Initialize();
+            ApplicationConfiguration.Initialize();   // high DPI and default font settings
+
+            // LoginForm is the single entry point for all three roles, and passing it to
+            // Run() makes it the MAIN form: when it finally closes the message loop ends
+            // and the application exits. That is why logging out hides this form and
+            // shows it again rather than closing it.
             Application.Run(new LoginForm());
         }
 

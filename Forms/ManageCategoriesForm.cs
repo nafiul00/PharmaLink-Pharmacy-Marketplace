@@ -156,6 +156,13 @@ namespace PharmaLinkApp.Forms
             {
                 UiTheme.ClearError(lblNameError, txtName);
             }
+            // Checked on every keystroke, so a clash is shown while typing rather than
+            // on save. _selectedId is passed as the id to IGNORE: when EDITING a
+            // category, its own name must not count as a duplicate of itself. Adding a
+            // new one passes 0, which matches no row, so every existing name counts.
+            //
+            // The message names UQ_Categories_Name deliberately - this check is a
+            // courtesy and the UNIQUE constraint is what actually guarantees it.
             else if (_categories.NameExists(txtName.Text, _selectedId))
             {
                 UiTheme.ShowError(lblNameError, txtName,

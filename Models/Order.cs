@@ -24,6 +24,15 @@ namespace PharmaLinkApp.Models
         public string PharmacyName { get; set; } = "";
         public string PharmacyAddress { get; set; } = "";
         public string PharmacyLicense { get; set; } = "";
+        // COMPOSITION: an Order HAS line items. This is the object-model counterpart of
+        // the OrderItems junction table - the many-to-many between orders and medicines
+        // resolved into a collection hanging off the parent.
+        //
+        // Initialised to an empty list at declaration, never left null, so callers can
+        // foreach over it without a null check even for an order that failed to load
+        // its lines. OrderService.GetOrderWithItems fills it with a second query and
+        // hands back one fully assembled object, which is what lets InvoiceForm print
+        // the whole bill from a single variable.
         public List<OrderItem> Items { get; set; } = new List<OrderItem>();
     }
 }

@@ -6,6 +6,19 @@ using PharmaLinkApp.Models;
 
 namespace PharmaLinkApp.Services
 {
+    // -------------------------------------------------------------------------
+    //  Layer: service.  Called by LoginForm, SignUpForm, MyProfileForm,
+    //  CheckoutForm and SuperAdminManageUsersForm.
+    //
+    //  Every query goes through DbHelper except RegisterPharmacyOwner, which
+    //  opens its own connection so the Users row and the Pharmacies row are
+    //  written inside one transaction.
+    //
+    //  This is the only service that uses PasswordHelper. Login reads the row by
+    //  email alone and verifies the hash in C#, because the salt is stored per
+    //  user and cannot be applied before that row has been read.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Everything to do with getting into the system: login, registration,
     /// profile editing and password change.
@@ -33,8 +46,20 @@ namespace PharmaLinkApp.Services
         /// </summary>
         public User Login(string email, string password, out string failureReason)
         {
-            failureReason = "";
+            failureReason = "";     // out parameters must be assigned on every path
 
+            // THE LOGIN QUERY. Note what is NOT here: the password.
+            // The report's section 7.1 puts "AND u.PasswordHash = @PasswordHash" in this
+            // WHERE clause. That only works if every account shares one salt, because
+            // otherwise the hash cannot be computed until you know which row you are
+            // looking at. Our salt is per user, so the row must be read FIRST and the
+            // hash compared afterwards, in memory. Keeping the comparison out of SQL
+            // also avoids leaking which half of the pair was wrong through query timing.
+            //
+            // The LEFT JOIN, not INNER, is what lets all three roles use one query:
+            // a pharmacy owner gets PharmacyId and PharmacyStatus filled in from the
+            // joined row, while a SuperAdmin or Customer matches no Pharmacies row and
+            // simply gets NULL in those three columns.
             const string sql = @"
 SELECT  u.UserId, u.FullName, u.Email, u.PasswordHash, u.PasswordSalt,
         u.Phone, u.Address, u.UserType, u.Status, u.CreatedAt,
@@ -43,28 +68,43 @@ FROM    Users u
         LEFT JOIN Pharmacies p ON p.OwnerId = u.UserId
 WHERE   u.Email = @Email;";
 
+            // Passed as a PARAMETER, never concatenated, so a typed apostrophe is data
+            // and not SQL. Trim first: Email is UNIQUE and a trailing space would not match.
             DataTable table = _db.ExecuteTable(sql, DbHelper.P("@Email", email.Trim()));
 
             if (table.Rows.Count == 0)
             {
+                // No such email. In a bank this message would be deliberately vague to
+                // avoid confirming which addresses are registered; for a course project
+                // the clearer message is the more useful one.
                 failureReason = "No account is registered with that email address.";
                 return null;
             }
 
-            DataRow row = table.Rows[0];
+            DataRow row = table.Rows[0];      // Email is UNIQUE, so there can only be one
 
+            // Read the two halves of the stored credential. The salt is what makes two
+            // users who picked the same password end up with different hashes.
             string salt = DbHelper.GetString(row, "PasswordSalt");
             string hash = DbHelper.GetString(row, "PasswordHash");
 
+            // Verify recomputes Base64(SHA-256(salt + typed password)) and compares it to
+            // the stored hash with an ordinal comparison. The plain password is never
+            // stored, never logged, and never sent to SQL Server.
             if (!PasswordHelper.Verify(password, salt, hash))
             {
                 failureReason = "That password is not correct.";
                 return null;
             }
 
+            // Password was right, so the person IS who they say. Whether they are allowed
+            // in is a separate question, and it is asked only after identity is proven.
+            // Status is constrained by CK_Users_Status to exactly these three values.
             string status = DbHelper.GetString(row, "Status");
             if (status == "Pending")
             {
+                // A pharmacy owner who registered but whose DGDA licence the Super Admin
+                // has not checked yet. Seed account imran@newlifepharmacy.com sits here.
                 failureReason = "This account is still waiting for Super Admin approval.";
                 return null;
             }
@@ -277,22 +317,34 @@ WHERE   UserId = @UserId;";
         /// </summary>
         public bool ChangePassword(int userId, string currentPassword, string newPassword)
         {
+            // Read this user's CURRENT salt first. Without it the typed "current password"
+            // cannot be hashed into anything comparable, because the salt is per user.
             string currentSalt = _db.ExecuteScalarString(
                 "SELECT PasswordSalt FROM Users WHERE UserId = @UserId;",
                 DbHelper.P("@UserId", userId));
 
-            if (string.IsNullOrEmpty(currentSalt)) return false;
+            if (string.IsNullOrEmpty(currentSalt)) return false;   // no such user
 
+            // What the stored hash SHOULD be if the typed current password is correct.
             string currentHash = PasswordHelper.Hash(currentPassword, currentSalt);
 
+            // A password change gets a brand new salt, not a reuse of the old one. If the
+            // salt were kept, anyone who had seen the old hash could tell the password had
+            // changed, and rainbow work done against that salt would still apply.
             string newSalt = PasswordHelper.CreateSalt();
             string newHash = PasswordHelper.Hash(newPassword, newSalt);
 
+            // The check and the write are ONE statement. "AND PasswordHash = @OldHash"
+            // means a wrong current password matches no row, so the UPDATE changes
+            // nothing and ExecuteNonQuery returns 0. There is no window between reading
+            // the old hash and writing the new one in which anything could change.
             const string sql = @"
 UPDATE  Users
 SET     PasswordHash = @NewHash, PasswordSalt = @NewSalt
 WHERE   UserId = @UserId AND PasswordHash = @OldHash;";
 
+            // == 1 is the whole result: exactly one row changed means success. 0 means the
+            // current password was wrong, and the form turns that into a message.
             return _db.ExecuteNonQuery(sql,
                 DbHelper.P("@NewHash", newHash),
                 DbHelper.P("@NewSalt", newSalt),

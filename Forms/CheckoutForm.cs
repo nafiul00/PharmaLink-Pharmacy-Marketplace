@@ -170,11 +170,22 @@ namespace PharmaLinkApp.Forms
 
         private void LoadReviewGrid()
         {
+            // Fetch the WHOLE basket, every pharmacy, in one query.
             DataTable allLines = _cart.GetLinesTable(UserSession.UserId);
 
+            // Then narrow it IN MEMORY to the pharmacy being checked out right now.
+            // This is the only client side filter in the entire application - every
+            // other screen filters in SQL with a WHERE clause. It is justified here
+            // because the form is stepping through the same basket pharmacy by
+            // pharmacy, so the rows are already loaded and re-querying per step would
+            // be a round trip for data we are holding.
+            //
+            // RowFilter takes a DataColumn expression, not SQL. Concatenating the id
+            // is safe because CurrentPharmacyId is an int read from a DataRow the
+            // database gave us, never text a user typed.
             DataView view = new DataView(allLines);
             view.RowFilter = "PharmacyId = " + CurrentPharmacyId;
-            DataTable mine = view.ToTable();
+            DataTable mine = view.ToTable();      // materialise the filtered view
 
             dgvReview.DataSource = mine;
 
@@ -315,18 +326,30 @@ namespace PharmaLinkApp.Forms
             try
             {
                 string message;
+                // One call runs the whole five statement transaction for THIS pharmacy
+                // only. PaymentMethodForDatabase() converts the friendly combo text
+                // ('Cash on delivery') into the stored value ('CashOnDelivery') that
+                // CK_Orders_Payment accepts - the UI wording and the database
+                // vocabulary are deliberately separate.
                 int orderId = _orders.Checkout(UserSession.UserId, CurrentPharmacyId,
                                                txtAddress.Text.Trim(), PaymentMethodForDatabase(),
                                                DeliveryCharge, out message);
 
                 if (orderId == 0)
                 {
+                    // 0 means the transaction rolled back - almost always because a
+                    // medicine sold out between adding it and confirming. message
+                    // names the medicine, so show it rather than a generic failure.
                     MessageBox.Show(message, "Order not placed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                // The prescription needs the OrderId, so it is recorded straight
-                // after the order is created.
+                // ORDER OF OPERATIONS MATTERS HERE. Prescriptions.OrderId is a foreign
+                // key to Orders, so the prescription row CANNOT be written until the
+                // order exists and has been given its identity. That is also why
+                // UploadPrescriptionForm only collects the file and hands back a path:
+                // at the moment the user chose the image there was no OrderId to attach
+                // it to. The upload copies the file and inserts the row here instead.
                 if (!string.IsNullOrEmpty(_pendingRxImagePath))
                 {
                     string rxMessage;

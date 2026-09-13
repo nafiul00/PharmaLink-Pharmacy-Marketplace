@@ -174,6 +174,16 @@ namespace PharmaLinkApp.Forms
             int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);
             int rating = Convert.ToInt32(row.Cells["Rating"].Value);
 
+            // HONEST NOTE, and worth knowing before anyone asks: this button writes
+            // NOTHING to the database. There is no reported flag column on Reviews, so
+            // nothing here changes the review or notifies anyone - the message box is
+            // the entire behaviour.
+            //
+            // It is defensible rather than broken, because 1 and 2 star reviews already
+            // appear in the Super Admin's moderation queue by default, so the abusive
+            // ones surface without being reported. But it is incomplete: a ReportedAt
+            // or IsReported column on Reviews, set here and surfaced in that queue,
+            // would be the honest next step. Do not claim this files a report.
             MessageBox.Show(
                 "Review " + reviewId + " has been flagged for the Super Admin.\r\n\r\n" +
                 "It stays visible to customers until the Super Admin reviews it. Nothing on this screen " +

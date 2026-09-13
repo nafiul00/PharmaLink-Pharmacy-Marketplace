@@ -126,10 +126,15 @@ namespace PharmaLinkApp.Forms
 
         private void Star_Click(object sender, EventArgs e)
         {
+            // All five star buttons share THIS ONE handler. Casting sender tells us
+            // which was pressed, and each button's Tag property carries its own value
+            // (1 to 5), set in the designer. Without Tag this would need five almost
+            // identical handlers, or a name-parsing hack.
             Button clicked = (Button)sender;
             _rating = int.Parse(clicked.Tag.ToString());
-            PaintStars();
-            ValidateAll();
+
+            PaintStars();    // repaint all five so 1..n appear filled and the rest empty
+            ValidateAll();   // Submit stays disabled until a rating AND a medicine exist
         }
 
         private void PaintStars()

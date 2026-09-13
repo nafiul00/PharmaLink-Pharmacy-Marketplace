@@ -28,9 +28,20 @@ namespace PharmaLinkApp.Models
         public string Area { get; set; } = "";
         public decimal DiscountPercent { get; set; }
 
+        // COMPUTED PROPERTIES - abstraction, and the best OOP example in the models.
+        // Neither is stored in the database and neither has a setter: they are derived
+        // from fields already on the object, so a caller asks a question and never sees
+        // the arithmetic. => is expression-bodied syntax, evaluated fresh on every read,
+        // which means they can never fall out of step with UnitPrice or Stock.
+
+        // 100m is a DECIMAL literal, not 100. Using 100 would perform integer division
+        // in part of the expression and lose the fractional percentage.
+        // Rounded to 2dp here because money is displayed and stored to 2dp.
         public decimal PriceAfterDiscount =>
             decimal.Round(UnitPrice * (1 - DiscountPercent / 100m), 2);
 
+        // The same two-column comparison the low stock query makes in SQL, available on
+        // the object for any screen holding a Medicine rather than a DataTable.
         public bool IsLowStock => Stock < MinStock;
     }
 }

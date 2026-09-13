@@ -4,6 +4,20 @@ using PharmaLinkApp.Models;
 
 namespace PharmaLinkApp.Services
 {
+    // -------------------------------------------------------------------------
+    //  Layer: service.  Called by AdminMedicineForm, MedicineEditorForm,
+    //  AdminInventoryForm, AdminDashboard, AdminEarningsForm, CustomerHomeForm,
+    //  MedicineDetailsForm and DiscountOffersForm. All access via DbHelper.
+    //
+    //  Customer-side reads filter on m.IsActive = 1 and ph.Status = 'Approved',
+    //  so a suspended shop's stock leaves the catalogue without a row being
+    //  deleted. Owner-side reads and writes all carry
+    //  WHERE PharmacyId = @PharmacyId, taken from UserSession.
+    //
+    //  Delist sets IsActive = 0 rather than deleting the row, so the OrderItems
+    //  foreign keys on past invoices keep resolving.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// The catalogue, from both sides of the marketplace.
     ///
@@ -56,17 +70,33 @@ FROM    Medicines m
                      WHERE  o.MedicineId = m.MedicineId
                        AND  o.IsActive   = 1
                        AND  CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate) d
+-- The three safety rules first. These are NOT optional filters - they always apply,
+-- which is why a delisted medicine, a suspended shop's stock and expired stock can
+-- never reach a customer screen no matter what the form sends.
 WHERE   m.IsActive   = 1
-  AND   ph.Status    = 'Approved'
+  AND   ph.Status    = 'Approved'          -- this is why Pending New Life is invisible
   AND   m.ExpiryDate > CAST(GETDATE() AS DATE)
+  -- Now the five optional filters. Every one uses the same trick:
+  --      (@Param = <empty value> OR <real condition>)
+  -- If the parameter is 0 or an empty string the left side is true, the OR
+  -- short circuits and the filter does nothing. That single pattern is what lets
+  -- the customer combine ANY subset of the five without the application having to
+  -- build different SQL for each combination - one query, 32 possible behaviours.
+  --
+  -- The keyword searches THREE columns, so a prescription saying 'paracetamol'
+  -- finds Napa and Ace Plus even though neither brand contains that word.
   AND   (@Keyword    = ''  OR m.MedicineName LIKE '%' + @Keyword + '%'
                            OR m.GenericName  LIKE '%' + @Keyword + '%'
                            OR m.Manufacturer LIKE '%' + @Keyword + '%')
   AND   (@CategoryId = 0   OR m.CategoryId = @CategoryId)
+  -- Note the guard is on @MaxPrice, not @MinPrice: 'under Tk 10' is a legitimate
+  -- range with a minimum of 0, so testing @MinPrice would disable that filter.
   AND   (@MaxPrice   = 0   OR m.UnitPrice BETWEEN @MinPrice AND @MaxPrice)
   AND   (@Area       = ''  OR ph.Area = @Area)
   AND   (@PharmacyId = 0   OR ph.PharmacyId = @PharmacyId)
   AND   (@InStock    = 0   OR m.Stock > 0)
+-- Cheapest first WITHIN a brand name, so the same medicine from three pharmacies
+-- lists with the best price at the top.
 ORDER BY m.MedicineName, PriceYouPay;";
 
             return _db.ExecuteTable(sql,
@@ -193,10 +223,20 @@ WHERE   MedicineId = @Id AND PharmacyId = @PharmacyId;";
         /// </summary>
         public bool Delist(int medicineId, int pharmacyId)
         {
+            // A SOFT delete: an UPDATE, not a DELETE. OrderItems rows on past invoices
+            // hold a foreign key to this medicine, and FK_OrderItems_Medicine has no
+            // cascade, so a real DELETE would either be refused by the database or, with
+            // a cascade, would quietly destroy invoice history. Flipping IsActive to 0
+            // removes it from every customer query (they all filter IsActive = 1) while
+            // every old invoice still resolves. Relist() is simply the reverse.
+            //
+            // Both ids are in the WHERE clause: the medicine id says WHICH row, and
+            // PharmacyId says it must be YOURS. Passing another shop's medicine id
+            // matches no row, so the method returns false instead of touching it.
             return _db.ExecuteNonQuery(
                 "UPDATE Medicines SET IsActive = 0 WHERE MedicineId = @Id AND PharmacyId = @PharmacyId;",
                 DbHelper.P("@Id", medicineId),
-                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;   // exactly one row changed
         }
 
         public bool Relist(int medicineId, int pharmacyId)
@@ -276,14 +316,19 @@ WHERE   m.MedicineId = @Id AND m.PharmacyId = @PharmacyId;";
         public DataTable GetLowStock(int pharmacyId)
         {
             const string sql = @"
+-- ShortfallUnits is worked out by the QUERY, not on screen, so the grid can bind to it
+-- directly and the restock box can be pre-filled with the exact number to order.
 SELECT  m.MedicineId, m.MedicineName, m.Strength, c.CategoryName,
         m.Stock, m.MinStock, (m.MinStock - m.Stock) AS ShortfallUnits
 FROM    Medicines m
         INNER JOIN Categories c ON c.CategoryId = m.CategoryId
-WHERE   m.PharmacyId = @PharmacyId
+WHERE   m.PharmacyId = @PharmacyId        -- the isolation rule: this shop only
+  -- The alert compares TWO COLUMNS OF THE SAME ROW rather than using one fixed
+  -- number. Ten boxes of a glucometer is plenty; ten strips of Napa is nothing.
+  -- Each medicine carries its own MinStock, so 'low' means low for that product.
   AND   m.Stock      < m.MinStock
-  AND   m.IsActive   = 1
-ORDER BY ShortfallUnits DESC;";
+  AND   m.IsActive   = 1                  -- a delisted medicine cannot be 'low'
+ORDER BY ShortfallUnits DESC;";           // worst shortage first, so it reads as a to-do list
 
             return _db.ExecuteTable(sql, DbHelper.P("@PharmacyId", pharmacyId));
         }

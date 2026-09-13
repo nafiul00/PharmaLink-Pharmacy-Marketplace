@@ -9,6 +9,15 @@ namespace PharmaLinkApp.Models
         public int UserId { get; set; }
         public string FullName { get; set; } = "";
         public string Email { get; set; } = "";
+        // The two halves of the stored credential, never the password itself.
+        // PasswordHash is Base64(SHA-256(PasswordSalt + password)); PasswordSalt is a
+        // fresh 12 byte random value per user, which is why two people who choose the
+        // same password still have completely different hashes - and why the hash
+        // cannot be computed until this row has been read, so login matches on Email
+        // alone and verifies in C#.
+        //
+        // These are populated only by AuthService.Login. GetUser deliberately leaves
+        // them empty, because no screen ever needs them.
         public string PasswordHash { get; set; } = "";
         public string PasswordSalt { get; set; } = "";
         public string Phone { get; set; } = "";

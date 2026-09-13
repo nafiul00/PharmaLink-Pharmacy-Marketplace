@@ -64,8 +64,16 @@ ORDER BY p.RegisteredAt;";
         public bool Approve(int pharmacyId)
         {
             const string sql = @"
+-- TWO rows change, because the shop record and the login account are separate
+-- concerns: Pharmacies says whether the shop may trade, Users says whether the
+-- person may sign in. Approving one without the other would leave an owner who
+-- can log in to a shop that is invisible, or a live shop nobody can administer.
+-- One transaction means both flip or neither does.
 BEGIN TRANSACTION;
     UPDATE Pharmacies SET Status = 'Approved' WHERE PharmacyId = @PharmacyId;
+    -- The owner is found THROUGH the pharmacy row, so the caller only ever needs
+    -- to know the PharmacyId. FK_Pharmacies_Owner guarantees this subquery finds
+    -- exactly one UserId, and UQ_Pharmacies_Owner guarantees it is not shared.
     UPDATE Users      SET Status = 'Active'
     WHERE  UserId = (SELECT OwnerId FROM Pharmacies WHERE PharmacyId = @PharmacyId);
 COMMIT TRANSACTION;";
@@ -82,10 +90,18 @@ COMMIT TRANSACTION;";
         public bool Suspend(int pharmacyId)
         {
             const string sql = @"
+-- THREE updates, one transaction. Approve needed two; suspending needs a third
+-- because the shop's stock must leave the customer catalogue as well.
+-- Note what is absent: there is no DELETE anywhere here. Past orders, invoices
+-- customers already hold and the sales history all stay exactly as they were.
 BEGIN TRANSACTION;
     UPDATE Pharmacies SET Status   = 'Suspended' WHERE PharmacyId = @PharmacyId;
-    UPDATE Users      SET Status   = 'Suspended'
+    UPDATE Users      SET Status   = 'Suspended'   -- the owner can no longer sign in
     WHERE  UserId = (SELECT OwnerId FROM Pharmacies WHERE PharmacyId = @PharmacyId);
+    -- Every medicine this shop lists is delisted, the same soft delete the owner's
+    -- own Delist button uses. Customer queries filter on IsActive = 1, so the stock
+    -- vanishes from the catalogue without a single row being destroyed - and
+    -- Reinstate simply sets all three back.
     UPDATE Medicines  SET IsActive = 0           WHERE PharmacyId = @PharmacyId;
 COMMIT TRANSACTION;";
 

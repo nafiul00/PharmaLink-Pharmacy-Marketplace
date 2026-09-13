@@ -89,7 +89,15 @@ namespace PharmaLinkApp.Forms
 
             try
             {
+                // Index 0 is the "All areas" placeholder, so it becomes an empty string -
+                // the query's signal for "do not filter on this".
                 string area = cmbArea.SelectedIndex <= 0 ? "" : cmbArea.SelectedItem.ToString();
+
+                // Notice what this form does NOT do: it never checks a date. The query
+                // carries "CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate",
+                // so an expired offer is filtered out by the DATABASE and can never be
+                // displayed by mistake. The seed data deliberately includes one expired
+                // Glucometer offer precisely to prove that.
                 DataTable table = _offers.GetActiveOffers(SelectedCategoryId(), area);
                 dgvOffers.DataSource = table;
 

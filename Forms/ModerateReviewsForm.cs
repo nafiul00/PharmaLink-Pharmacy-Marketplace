@@ -176,9 +176,17 @@ namespace PharmaLinkApp.Forms
 
             if (answer != DialogResult.Yes) return;
 
+            // HIDE, never DELETE. SetHidden runs UPDATE Reviews SET IsHidden = 1, so the
+            // row survives. Every customer-facing query and every average-rating
+            // calculation carries "WHERE r.IsHidden = 0", which is why hiding one review
+            // silently changes the pharmacy's average on the low-rated report as well.
+            //
+            // Keeping the row matters twice over: the pharmacy can dispute the decision,
+            // and Reviews.OrderId is a foreign key to a real order, so deleting reviews
+            // would erase part of the audit trail that proves ratings are genuine.
             _reviews.SetHidden(reviewId, true);
             lblStatus.Text = "Review " + reviewId + " hidden. It no longer counts towards " + pharmacy + "'s average rating.";
-            LoadGrid();
+            LoadGrid();   // re-query so the row redraws greyed out, or leaves the queue
         }
 
         private void btnUnhide_Click(object sender, EventArgs e)

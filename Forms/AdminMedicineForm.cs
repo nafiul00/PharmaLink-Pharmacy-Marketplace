@@ -6,6 +6,24 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation.  Opened by AdminDashboard. Uses MedicineService.
+    //
+    //  Load order:
+    //      AdminMedicineForm_Load -> ApplyTheme -> LoadGrid
+    //
+    //  LoadGrid calls MedicineService.GetForPharmacy(UserSession.PharmacyId,
+    //  txtSearch.Text, chkShowDelisted.Checked) and assigns the DataTable it
+    //  returns to dgvMedicines.DataSource. The column headers are renamed after
+    //  that assignment, because binding is what creates the columns.
+    //
+    //  Typing in the search box raises Filter_Changed, which calls LoadGrid
+    //  again, so the filtering is done by SQL rather than inside the grid.
+    //  Row colours come from the CellFormatting event, not from the data.
+    //  Add and Edit open MedicineEditorForm as a modal dialog; Delist calls
+    //  MedicineService.Delist, which sets IsActive = 0 instead of deleting.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Requirement 11: the full CRUD on the owner's own medicines.
     ///

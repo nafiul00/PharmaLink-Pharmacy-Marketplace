@@ -59,10 +59,22 @@ namespace PharmaLinkApp.Services
                     return false;
                 }
 
+                // Build a unique stored name from the order number plus a timestamp to the
+                // second. Keeping the customer's original filename would collide the
+                // moment two people both uploaded "photo.jpg", and embedding the OrderId
+                // means a file on disk can always be traced back to its order.
                 string storedName = "rx-" + orderId + "-" + DateTime.Now.ToString("yyyyMMddHHmmss") + extension;
                 string destination = Path.Combine(UploadFolder, storedName);
+
+                // Copy the file INTO the application's own folder. The customer's original
+                // stays where it was, and the application no longer depends on a path that
+                // might be a USB stick or a file they later delete. true = overwrite.
                 File.Copy(sourceImagePath, destination, true);
 
+                // Store a RELATIVE path in the database, never the absolute one. An
+                // absolute path from one computer is meaningless on any other machine,
+                // so the relative path is resolved against the install folder at
+                // display time by ResolveImagePath.
                 string relative = Path.Combine("Uploads", "Prescriptions", storedName);
 
                 const string sql = @"

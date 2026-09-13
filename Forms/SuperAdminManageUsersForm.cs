@@ -120,6 +120,15 @@ namespace PharmaLinkApp.Forms
             bool hasRow = row != null && row.Cells["Status"].Value != null;
             string status = hasRow ? row.Cells["Status"].Value.ToString() : "";
 
+            // Each button is hidden only for the state it would be a no-op in, so
+            // Suspend is available for Pending and Active accounts, and Activate for
+            // Pending and Suspended ones. That is deliberate: a Pending owner can be
+            // activated directly from here without going through pharmacy approval.
+            //
+            // Note the SuperAdmin's own account cannot appear in this grid at all -
+            // SearchUsers filters it out with "WHERE u.UserType <> 'SuperAdmin'", and
+            // SetUserStatus repeats that condition, so the platform operator cannot
+            // suspend themselves and lock everybody out.
             btnSuspend.Enabled = hasRow && status != "Suspended";
             btnActivate.Enabled = hasRow && status != "Active";
         }

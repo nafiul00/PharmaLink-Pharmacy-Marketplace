@@ -166,21 +166,30 @@ namespace PharmaLinkApp.Forms
 
             try
             {
+                // Turn the chosen band ("Tk 10 - 50") into two numbers. Index 0 is
+                // "Any price" and yields max = 0, which the query reads as "do not
+                // filter on price at all".
                 decimal minPrice, maxPrice;
                 SelectedPriceRange(out minPrice, out maxPrice);
 
+                // Index 0 is the "All areas" placeholder, so it becomes an empty string
+                // rather than the literal word "All areas" being sent to SQL as a value
+                // to match. Empty is the query's "no filter" signal.
                 string area = cmbArea.SelectedIndex <= 0 ? "" : cmbArea.SelectedItem.ToString();
 
+                // ONE call, seven arguments, five controls. Everything the user chose is
+                // converted to a neutral value here and combined inside a single query -
+                // no filtering happens in this form and nothing is filtered in the grid.
                 DataTable table = _medicines.SearchForCustomer(
-                    txtSearch.Text.Trim(),
-                    SelectedCategoryId(),
-                    minPrice, maxPrice,
-                    area,
-                    SelectedPharmacyId(),
-                    cmbAvailability.SelectedIndex == 1);
+                    txtSearch.Text.Trim(),                    // matched against 3 columns
+                    SelectedCategoryId(),                     // 0 = all categories
+                    minPrice, maxPrice,                       // maxPrice 0 = any price
+                    area,                                     // "" = all areas
+                    SelectedPharmacyId(),                     // 0 = all pharmacies
+                    cmbAvailability.SelectedIndex == 1);      // true = in stock only
 
-                dgvMedicines.DataSource = table;
-                LabelColumns();
+                dgvMedicines.DataSource = table;   // binding creates the columns...
+                LabelColumns();                    // ...so renaming them must come after
 
                 int cartLines = _cart.CountLines(UserSession.UserId);
                 lblCartSummary.Text = cartLines == 0 ? "Cart is empty" : "Cart:  " + cartLines + " item(s)";

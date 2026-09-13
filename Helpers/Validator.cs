@@ -35,6 +35,14 @@ namespace PharmaLinkApp.Helpers
         {
             if (IsBlank(value)) return false;
             string digits = value.Trim();
+            // Three conditions, all required: exactly 11 characters, every one a digit,
+            // and the Bangladeshi mobile prefix 01. Length alone would accept letters;
+            // DigitsOnly alone would accept a landline or a wrong-length number.
+            //
+            // Note this rule lives ONLY here, not in the database - Phone is NVARCHAR(20)
+            // with a UNIQUE constraint but no CHECK on its shape. So unlike the price and
+            // rating rules, this one is enforced once rather than twice, and that is a
+            // fair gap to acknowledge: a CK_Users_Phone would close it.
             return digits.Length == 11 && DigitsOnly.IsMatch(digits) && digits.StartsWith("01");
         }
 
@@ -69,6 +77,15 @@ namespace PharmaLinkApp.Helpers
         /// <summary>Discounts are capped by CK_Offers_Percent at 70 percent.</summary>
         public static bool IsDiscountPercent(string value, out decimal result)
         {
+            // The 0 and 70 bounds are NOT arbitrary - they are the same numbers
+            // CK_Offers_Percent enforces on the Offers table. That is the "validated
+            // twice" pattern: this method gives the user a red label before anything is
+            // sent, and the CHECK constraint refuses the row even if this form were
+            // bypassed entirely. If the two ever disagreed, the database would win and
+            // the user would see an exception instead of a message.
+            //
+            // TryParse rather than Parse, so typing "abc" returns false instead of
+            // throwing; result is set to 0 on failure and callers ignore it.
             return decimal.TryParse(value, out result) && result > 0m && result <= 70m;
         }
 

@@ -3,6 +3,19 @@ using PharmaLinkApp.Database;
 
 namespace PharmaLinkApp.Services
 {
+    // -------------------------------------------------------------------------
+    //  Layer: service.  Called by DiscountOffersForm (the owner's side) and
+    //  CustomerOffersForm (the customer's side). All access via DbHelper.
+    //
+    //  The discounted price is calculated inside each SQL query rather than in
+    //  C#, so the offers screen, the medicine details screen, the cart and the
+    //  invoice all print the same figure.
+    //
+    //  Create, Update, SetActive and Delete each join Medicines and filter on
+    //  PharmacyId, so an owner cannot create or change a discount on another
+    //  shop's medicine: if the medicine is not his, no row is affected.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Time limited percentage discounts (requirements 14 and 29).
     ///

@@ -4,6 +4,20 @@ using PharmaLinkApp.Database;
 
 namespace PharmaLinkApp.Services
 {
+    // -------------------------------------------------------------------------
+    //  Layer: service.  Called by AdminEarningsForm, SuperAdminSalesReportForm,
+    //  SuperAdminLowRatedShopsForm, SuperAdminDashboard and AdminDashboard.
+    //  All access via DbHelper; ExportToCsv writes a file and touches no table.
+    //
+    //  GetEarnings takes pharmacyId = 0 for the platform-wide report or a real
+    //  PharmacyId for one owner, so a single query serves both roles.
+    //
+    //  Inside it, order-level and item-level figures are aggregated in two
+    //  separate derived tables. Joining OrderItems multiplies the order rows, so
+    //  summing the commission held on the order header in that same join would
+    //  count it once per line item instead of once per order.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Every reporting query in the application.
     ///
@@ -46,23 +60,37 @@ SELECT  ph.PharmacyId,
         itm.AverageItemPrice,
         ph.CommissionRate
 FROM    Pharmacies ph
-        -- one row per pharmacy, counted at order level so the commission
-        -- frozen on each order header is summed exactly once
+        -- DERIVED TABLE 1 of 2 - ORDER LEVEL.
+        -- This is the whole point of the query and the sharpest thing in the project.
+        -- CommissionAmount is stored ONCE, on the order header. If this SUM were taken
+        -- in the same join as OrderItems, the order row would be duplicated once per
+        -- line item and a three line order would have its commission counted three
+        -- times - classic join fan-out, and the figures would silently be wrong rather
+        -- than crash. Aggregating order level figures in their own subquery FIRST
+        -- collapses each pharmacy to one row before anything else is joined to it.
         INNER JOIN (SELECT  o.PharmacyId,
                             COUNT(*)                                       AS TotalOrders,
                             CAST(SUM(o.CommissionAmount) AS DECIMAL(12,2)) AS PlatformCommission
                     FROM    Orders o
-                    WHERE   o.Status <> 'Cancelled'
+                    WHERE   o.Status <> 'Cancelled'        -- cancelled orders earn nothing
                       AND   o.OrderDate BETWEEN @FromDate AND @ToDate
                       AND   (@Status = '' OR o.Status = @Status)
                     GROUP BY o.PharmacyId) ord ON ord.PharmacyId = ph.PharmacyId
-        -- and one row per pharmacy at line item level for the item figures
+        -- DERIVED TABLE 2 of 2 - LINE ITEM LEVEL.
+        -- These three figures genuinely need OrderItems, because units sold and gross
+        -- sales only exist per line. Joining OrderItems is correct HERE and wrong in
+        -- the block above; separating them is what lets both be right in one result.
+        -- Each subquery also collapses to one row per pharmacy, so joining them to
+        -- each other multiplies nothing.
         INNER JOIN (SELECT  o.PharmacyId,
                             SUM(oi.Quantity)                          AS UnitsSold,
                             CAST(SUM(oi.Subtotal) AS DECIMAL(12,2))   AS GrossSales,
                             CAST(AVG(oi.UnitPrice) AS DECIMAL(10,2))  AS AverageItemPrice
                     FROM    Orders o
                             INNER JOIN OrderItems oi ON oi.OrderId = o.OrderId
+                    -- The same three filters as above, deliberately repeated: each
+                    -- subquery must see the same set of orders or the two halves of a
+                    -- row would describe different date ranges.
                     WHERE   o.Status <> 'Cancelled'
                       AND   o.OrderDate BETWEEN @FromDate AND @ToDate
                       AND   (@Status = '' OR o.Status = @Status)

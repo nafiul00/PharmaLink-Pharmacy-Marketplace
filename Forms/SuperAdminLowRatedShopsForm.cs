@@ -66,6 +66,13 @@ namespace PharmaLinkApp.Forms
         {
             try
             {
+                // Both thresholds come from spinners, so the Super Admin can ask "below
+                // 2.0 with at least 5 reviews" without anyone editing SQL. The dashboard
+                // calls the same method with the fixed defaults 2.5 and 2.
+                //
+                // numMinReviews.Value is decimal (NumericUpDown always is), so it needs
+                // the explicit (int) cast; numThreshold stays decimal because the rating
+                // average genuinely is fractional.
                 _current = _reports.GetLowRatedPharmacies(numThreshold.Value, (int)numMinReviews.Value);
                 dgvLowRated.DataSource = _current;
 

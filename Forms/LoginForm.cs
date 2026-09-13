@@ -6,6 +6,20 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation.  Opened by Program.Main as the application's entry
+    //  form. Uses AuthService (login), UserSession (identity), UiTheme (styling)
+    //  and Validator (field rules).
+    //
+    //  Flow for a sign in:
+    //      btnLogin_Click -> ValidateFields -> AuthService.Login
+    //                     -> fill UserSession -> OpenDashboardFor(UserType)
+    //
+    //  There is no SQL in this file. The login query lives in AuthService.Login,
+    //  which is the rule every form here follows: validate, call a service, bind
+    //  the result.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// The single entry point of the application.
     ///
@@ -26,10 +40,11 @@ namespace PharmaLinkApp.Forms
 
         private void LoginForm_Load(object sender, EventArgs e)
         {
-            ApplyTheme();
-            UserSession.Clear();
-            txtEmail.Focus();
-            ValidateFields();
+            ApplyTheme();          // colours, fonts and the demo account list on the left panel
+            UserSession.Clear();   // wipe any previous identity, so a stale PharmacyId cannot leak
+                                   // into the next session if someone logs out and back in
+            txtEmail.Focus();      // cursor starts in the first field
+            ValidateFields();      // runs once on an empty form purely to DISABLE the button
         }
 
         private void ApplyTheme()
@@ -112,13 +127,20 @@ namespace PharmaLinkApp.Forms
 
         private bool ValidateFields()
         {
-            bool ok = true;
+            bool ok = true;      // stays true only if every rule below passes
 
+            // -- email --------------------------------------------------------
+            // Empty is not an error yet: the user has not finished typing, so clear
+            // the message but still block the button. Showing red on an untouched
+            // form would be shouting at someone who has done nothing wrong.
             if (Validator.IsBlank(txtEmail.Text))
             {
                 UiTheme.ClearError(lblEmailError, txtEmail);
                 ok = false;
             }
+            // Something was typed but it is not an email shape. Validator.IsEmail
+            // uses the same rule as CK_Users_Email on the Users table, so what the
+            // form refuses is exactly what the database would refuse.
             else if (!Validator.IsEmail(txtEmail.Text))
             {
                 UiTheme.ShowError(lblEmailError, txtEmail, "That does not look like a valid email address.");
@@ -126,14 +148,18 @@ namespace PharmaLinkApp.Forms
             }
             else
             {
-                UiTheme.ClearError(lblEmailError, txtEmail);
+                UiTheme.ClearError(lblEmailError, txtEmail);   // valid, so remove any old message
             }
 
+            // -- password -----------------------------------------------------
             if (Validator.IsBlank(txtPassword.Text))
             {
                 UiTheme.ClearError(lblPasswordError, txtPassword);
                 ok = false;
             }
+            // Six is the minimum length the sign up form enforces, so anything
+            // shorter cannot match a real account and is refused before it costs a
+            // database round trip.
             else if (txtPassword.Text.Length < 6)
             {
                 UiTheme.ShowError(lblPasswordError, txtPassword, "Password must be at least 6 characters.");
@@ -144,6 +170,8 @@ namespace PharmaLinkApp.Forms
                 UiTheme.ClearError(lblPasswordError, txtPassword);
             }
 
+            // The button IS the validation result: disabled and grey until every rule
+            // passes, so an obviously wrong attempt never reaches the database.
             btnLogin.Enabled = ok;
             btnLogin.BackColor = ok ? UiTheme.Primary : Color.FromArgb(170, 190, 184);
             return ok;
@@ -160,40 +188,52 @@ namespace PharmaLinkApp.Forms
 
         private void btnLogin_Click(object sender, EventArgs e)
         {
+            // Re-check the field rules even though the button is only enabled when
+            // they pass: AcceptButton means Enter can also reach this handler.
             if (!ValidateFields()) return;
 
-            Cursor = Cursors.WaitCursor;
+            Cursor = Cursors.WaitCursor;                 // this is a round trip to SQL Server
             try
             {
-                string reason;
+                string reason;                           // the service writes the refusal text here
+
+                // One call does the whole sign in: read the Users row by email,
+                // recompute the hash with that row's own salt, compare it in memory,
+                // then check the account status and, for an owner, the shop status.
+                // Trim the email because a trailing space would fail the = comparison.
                 User user = _auth.Login(txtEmail.Text.Trim(), txtPassword.Text, out reason);
 
-                if (user == null)
+                if (user == null)                        // null means refused; reason says why
                 {
                     UiTheme.ShowError(lblFormError, null, reason);
-                    txtPassword.SelectAll();
+                    txtPassword.SelectAll();             // select it so the next keystroke replaces it
                     txtPassword.Focus();
-                    return;
+                    return;                              // stay on this form, nothing was opened
                 }
 
-                // The session is what every later query filters on.
+                // Copy the identity into the static session. THIS is the line that makes
+                // data isolation work: every Admin query later reads PharmacyId from here,
+                // never from a control, so there is nothing on screen a user could edit
+                // to see another pharmacy's rows.
                 UserSession.UserId = user.UserId;
                 UserSession.FullName = user.FullName;
                 UserSession.Email = user.Email;
-                UserSession.UserType = user.UserType;
-                UserSession.PharmacyId = user.PharmacyId;
+                UserSession.UserType = user.UserType;    // decides which dashboard opens next
+                UserSession.PharmacyId = user.PharmacyId;   // 0 for SuperAdmin and Customer
                 UserSession.PharmacyName = user.PharmacyName;
 
-                OpenDashboardFor(user.UserType);
+                OpenDashboardFor(user.UserType);         // the single role routing decision
             }
             catch (Exception ex)
             {
+                // Reached when the database itself is unreachable. DbHelper has already
+                // turned the SqlException into a readable sentence by this point.
                 UiTheme.ShowError(lblFormError, null,
                     "Could not reach the database. Run PharmaLinkDB_Setup.sql first. (" + ex.Message + ")");
             }
             finally
             {
-                Cursor = Cursors.Default;
+                Cursor = Cursors.Default;                // runs whether or not the login succeeded
             }
         }
 
@@ -204,55 +244,70 @@ namespace PharmaLinkApp.Forms
         /// </summary>
         private void OpenDashboardFor(string userType)
         {
-            Form dashboard;
+            Form dashboard;      // declared first, assigned by exactly one branch below
 
+            // One string, three destinations. UserType comes from the Users table and
+            // is constrained there by CK_Users_Type, so only these three values can
+            // ever reach this switch.
             switch (userType)
             {
                 case "SuperAdmin":
-                    dashboard = new SuperAdminDashboard();
+                    dashboard = new SuperAdminDashboard();   // platform operator
                     break;
                 case "Admin":
-                    dashboard = new AdminDashboard();
+                    dashboard = new AdminDashboard();        // pharmacy owner
                     break;
                 case "Customer":
-                    dashboard = new CustomerHomeForm();
+                    dashboard = new CustomerHomeForm();      // patient
                     break;
                 default:
+                    // Unreachable while the CHECK constraint holds, but a default that
+                    // reports the problem beats one that silently opens nothing.
                     UiTheme.ShowError(lblFormError, null, "This account has an unknown user type.");
                     return;
             }
 
-            Hide();
+            Hide();                                          // keep this form alive, just invisible
+            // Subscribe BEFORE showing: when the dashboard closes, the handler brings
+            // this form back and clears the session. That is how logging out returns
+            // here without the application ever exiting.
             dashboard.FormClosed += Dashboard_FormClosed;
-            dashboard.Show();
+            dashboard.Show();                                // non modal, so this method returns
         }
 
         /// <summary>Logging out closes the dashboard and brings this form back, cleared.</summary>
         private void Dashboard_FormClosed(object sender, FormClosedEventArgs e)
         {
+            // Fires when ANY of the three dashboards closes, which is what "log out"
+            // actually does. Clearing the session here rather than in each dashboard
+            // means there is exactly one place that can forget to do it.
             UserSession.Clear();
-            txtPassword.Clear();
-            lblFormError.Visible = false;
-            Show();
-            ValidateFields();
+            txtPassword.Clear();               // never leave the last password in the box
+            lblFormError.Visible = false;      // drop any refusal message from last time
+            Show();                            // un hide the form that was hidden on sign in
+            ValidateFields();                  // password is now empty, so disable the button again
             txtEmail.Focus();
         }
 
         private void btnGoSignUp_Click(object sender, EventArgs e)
         {
+            // using() so the dialog is disposed even if it throws. SignUpForm is modal,
+            // so execution stops on ShowDialog until the user finishes or cancels.
             using (SignUpForm signUp = new SignUpForm())
             {
                 Hide();
-                signUp.ShowDialog();
+                signUp.ShowDialog();           // blocks here
                 Show();
 
-                // A brand new customer lands straight back here with the email
-                // already typed in, so the first login is one click away.
+                // RegisteredEmail is a property the dialog fills only for a CUSTOMER,
+                // because a customer is created Active and can sign in immediately.
+                // A pharmacy owner is created Pending and cannot, so the property stays
+                // empty and nothing is pre-filled for them.
                 if (!string.IsNullOrEmpty(signUp.RegisteredEmail))
                 {
                     txtEmail.Text = signUp.RegisteredEmail;
                     txtPassword.Clear();
-                    txtPassword.Focus();
+                    txtPassword.Focus();       // straight to the only field still empty
                 }
                 ValidateFields();
             }

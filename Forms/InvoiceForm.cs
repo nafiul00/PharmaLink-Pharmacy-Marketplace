@@ -204,13 +204,25 @@ namespace PharmaLinkApp.Forms
                 RectangleF area = e.MarginBounds;
                 StringFormat format = new StringFormat(StringFormatFlags.LineLimit);
 
+                // Ask FIRST how much of the remaining text will physically fit on this
+                // page. MeasureString reports it through charactersFitted without
+                // drawing anything.
                 int charactersFitted, linesFilled;
                 e.Graphics.MeasureString(_printText.Substring(_printCharsPrinted), font, area.Size, format,
                                          out charactersFitted, out linesFilled);
 
+                // Then draw from the same starting point. Anything beyond the margins is
+                // clipped rather than overflowing, which is why the measurement above is
+                // what decides the split rather than the drawing.
                 e.Graphics.DrawString(_printText.Substring(_printCharsPrinted), font, Brushes.Black, area, format);
 
+                // Advance the bookmark by exactly what fitted, so the next page resumes
+                // where this one stopped. _printCharsPrinted is a FIELD, not a local,
+                // because PrintPage is raised once per page and must remember its place.
                 _printCharsPrinted += charactersFitted;
+
+                // Setting HasMorePages true makes the framework raise PrintPage again.
+                // Forgetting to set it false at the end would print forever.
                 e.HasMorePages = _printCharsPrinted < _printText.Length;
             }
         }

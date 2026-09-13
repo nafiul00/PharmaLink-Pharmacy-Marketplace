@@ -99,12 +99,19 @@ namespace PharmaLinkApp.Forms
                 return;
             }
 
+            // Size checked BEFORE the image is decoded, because loading a very large
+            // photograph into memory just to reject it would be wasteful - and a
+            // malformed huge file could fail in a less controlled way.
+            // MaxBytes is 2 * 1024 * 1024, written as a calculation rather than 2097152
+            // so the intent stays readable.
             if (file.Length > MaxBytes)
             {
+                // 1024 / 1024.0 - the second divisor is a double on purpose, so the
+                // result keeps its fraction and reports "2.4 MB" rather than "2 MB".
                 UiTheme.ShowError(lblFileError, null,
                     "The image is " + (file.Length / 1024 / 1024.0).ToString("N1") +
                     " MB. Please use a photograph under 2 MB.");
-                UpdateAttachButton();
+                UpdateAttachButton();   // keeps Attach disabled, since no valid file was set
                 return;
             }
 

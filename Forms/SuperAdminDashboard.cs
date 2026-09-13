@@ -110,15 +110,24 @@ namespace PharmaLinkApp.Forms
             Cursor = Cursors.WaitCursor;
             try
             {
+                // Six figures, ONE database round trip. GetPlatformTotals runs a single
+                // SELECT containing six scalar subqueries rather than six separate
+                // queries, and hands the results back through out parameters because a
+                // method can only return one value. The alternative - a small class or
+                // a tuple - would be tidier OOP, and that is a fair criticism to accept
+                // if it is raised.
                 int pharmacies, pending, customers, orders;
                 decimal revenue, commission;
                 _reports.GetPlatformTotals(out pharmacies, out pending, out customers,
                                            out orders, out revenue, out commission);
 
+                // Tiles are Labels created in BuildTiles() and kept in fields, so
+                // refreshing the dashboard only rewrites their text instead of
+                // rebuilding the whole panel.
                 _tilePharmacies.Text = pharmacies.ToString();
                 _tileCustomers.Text = customers.ToString();
                 _tileOrders.Text = orders.ToString();
-                _tileCommission.Text = UiTheme.Money(commission);
+                _tileCommission.Text = UiTheme.Money(commission);   // formats as "Tk 1,234.00"
 
                 lblHeaderSub.Text = "Gross platform revenue " + UiTheme.Money(revenue) +
                                     "   |   " + pending + " pharmacy registration(s) waiting for approval";

@@ -10,6 +10,11 @@ namespace PharmaLinkApp.Models
         public int ReviewId { get; set; }
         public int CustomerId { get; set; }
         public int MedicineId { get; set; }
+        // THE COLUMN THAT MAKES A REVIEW VERIFIED. Without OrderId a review would just
+        // be an opinion attached to a medicine; carrying it means every rating traces
+        // back to a real, delivered order. It is also the third column of
+        // UQ_Reviews_OneEach (CustomerId, MedicineId, OrderId), which is what allows a
+        // repeat purchase to be reviewed again while blocking the same purchase twice.
         public int OrderId { get; set; }
         public byte Rating { get; set; }
         public string Comment { get; set; } = "";

@@ -6,6 +6,30 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation, modal dialog. Opened by AdminMedicineForm (Add and
+    //  Edit) and by AdminInventoryForm (Restock). Uses MedicineService and
+    //  CategoryService.
+    //
+    //  The constructor takes (medicineId, focusStock). A medicineId of 0 means
+    //  add, any other value means edit, and focusStock is true when the Restock
+    //  button opened the dialog so the cursor lands in the stock box.
+    //
+    //  Load order:
+    //      MedicineEditorForm_Load -> ApplyTheme -> LoadCategories
+    //                              -> LoadExisting (only when editing)
+    //
+    //  LoadCategories binds the ComboBox with DataSource plus DisplayMember
+    //  "CategoryName" and ValueMember "CategoryId", which is why SelectedValue
+    //  hands back the id directly when saving.
+    //
+    //  LoadExisting calls GetForEdit(medicineId, PharmacyId). A null result means
+    //  the row belongs to a different pharmacy: the id on its own is not enough
+    //  to load a record.
+    //  Save builds a Medicine object and calls Insert or Update, passing
+    //  PharmacyId from the session rather than from any control on the form.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// The Add / Edit Medicine modal dialog (requirement 12).
     ///

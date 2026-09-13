@@ -92,7 +92,15 @@ SELECT CAST(SCOPE_IDENTITY() AS INT);";
         /// <summary>Only allowed when nothing points at the category.</summary>
         public bool Delete(int categoryId)
         {
+            // Check BEFORE deleting rather than catching the failure afterwards. Without
+            // this guard the DELETE would still be refused - FK_Medicines_Category has
+            // no cascade, so SQL Server would raise error 547 - but the user would get a
+            // translated constraint error instead of a clear "deactivate it instead".
+            // The database is the guarantee; this line is the good manners.
             if (IsReferenced(categoryId)) return false;
+
+            // Reached only for a category nothing points at, which in practice means one
+            // created by mistake. Anything with history is deactivated via SetActive(false).
             return _db.ExecuteNonQuery(
                 "DELETE FROM Categories WHERE CategoryId = @Id;",
                 DbHelper.P("@Id", categoryId)) == 1;

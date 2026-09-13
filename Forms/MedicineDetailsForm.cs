@@ -152,10 +152,18 @@ namespace PharmaLinkApp.Forms
             {
                 // Struck through original beside the discounted price, exactly as
                 // the report describes.
+                // The list price, struck through. FontStyle.Strikeout is what draws the
+                // line; the label is otherwise an ordinary Label showing UnitPrice.
                 lblOriginalPrice.Text = UiTheme.Money(_medicine.UnitPrice);
                 lblOriginalPrice.Font = new Font("Segoe UI", 11F, FontStyle.Strikeout);
                 lblOriginalPrice.ForeColor = UiTheme.TextMuted;
 
+                // PriceAfterDiscount is a COMPUTED PROPERTY on the Medicine model
+                // (UnitPrice * (1 - DiscountPercent / 100), rounded to 2dp), not a
+                // calculation done here. DiscountPercent itself arrived from the query's
+                // OUTER APPLY over today's offers. So this screen, the cart and the
+                // invoice all derive the same number from the same two sources and
+                // cannot print three different prices for one medicine.
                 lblFinalPrice.Text = UiTheme.Money(_medicine.PriceAfterDiscount);
                 lblFinalPrice.Font = new Font("Segoe UI Semibold", 20F, FontStyle.Bold);
                 lblFinalPrice.ForeColor = UiTheme.Success;

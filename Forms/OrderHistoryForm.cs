@@ -177,6 +177,15 @@ namespace PharmaLinkApp.Forms
 
             btnViewInvoice.Enabled = true;
 
+            // CanReview is NOT worked out here. It is a column the query itself
+            // computed with a CASE plus a correlated NOT EXISTS: the order must be
+            // Delivered AND still contain at least one medicine this customer has not
+            // reviewed. Doing it in SQL means the button cannot disagree with what
+            // ReviewService.AddReview will actually allow, because both ask the
+            // database the same question.
+            //
+            // The column is hidden in the grid (Visible = false) - it is carried for
+            // this decision, not for display.
             bool canReview = row.Cells["CanReview"].Value != DBNull.Value &&
                              Convert.ToInt32(row.Cells["CanReview"].Value) == 1;
             string status = row.Cells["Status"].Value.ToString();

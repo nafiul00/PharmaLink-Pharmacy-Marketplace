@@ -187,9 +187,19 @@ namespace PharmaLinkApp.Forms
 
             string status = hasRow ? row.Cells["Status"].Value.ToString() : "";
 
-            btnApprove.Enabled = hasRow && status == "Pending";
-            btnSuspend.Enabled = hasRow && status == "Approved";
-            btnReinstate.Enabled = hasRow && status == "Suspended";
+            // The three status buttons are mutually exclusive by construction: a shop is
+            // Pending, Approved or Suspended (CK_Pharmacies_Status allows nothing else),
+            // so exactly one of these three can ever be enabled at a time. Encoding the
+            // lifecycle in the buttons means an illegal transition cannot be attempted.
+            btnApprove.Enabled = hasRow && status == "Pending";      // Pending -> Approved
+            btnSuspend.Enabled = hasRow && status == "Approved";     // Approved -> Suspended
+            btnReinstate.Enabled = hasRow && status == "Suspended";  // Suspended -> Approved
+
+            // Delete stays enabled for ANY status, because whether it is allowed depends
+            // on order history, not on status - and that question needs a database round
+            // trip. PharmacyService.Delete counts the orders and refuses with an
+            // explanation, which is better than a permanently greyed button the user
+            // cannot understand.
             btnDelete.Enabled = hasRow;
             btnSetCommission.Enabled = hasRow;
             txtCommission.Enabled = hasRow;

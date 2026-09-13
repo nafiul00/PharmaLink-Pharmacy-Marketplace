@@ -242,11 +242,17 @@ namespace PharmaLinkApp.Forms
                 }
                 else
                 {
-                    // The UPDATE carried "AND PasswordHash = @OldHash", so a wrong
-                    // current password simply changes no rows.
+                    // ChangePassword returned false, which means the UPDATE matched zero
+                    // rows. The UPDATE carried "AND PasswordHash = @OldHash", so the only
+                    // way to match nothing is for the typed current password to be wrong.
+                    //
+                    // Worth noting what did NOT happen: no exception was thrown and no
+                    // separate "check the password" query ran. The verification and the
+                    // write were the same statement, so there was never a moment between
+                    // them where the row could change.
                     UiTheme.ShowError(lblCurrentError, txtCurrent,
                         "That is not your current password, so nothing was changed.");
-                    txtCurrent.SelectAll();
+                    txtCurrent.SelectAll();   // select so the retype replaces it
                     txtCurrent.Focus();
                 }
             }

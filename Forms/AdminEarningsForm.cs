@@ -7,6 +7,27 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation.  Opened by AdminDashboard. Uses ReportService for
+    //  the figures and MedicineService to fill the medicine filter.
+    //
+    //  Load order:
+    //      AdminEarningsForm_Load -> ApplyTheme -> BuildTiles
+    //                             -> set the default 30 day range
+    //                             -> LoadMedicineFilter -> Generate
+    //
+    //  Generate goes to the database twice. GetEarningsTotals returns the four
+    //  tile figures through out parameters, and GetSalesDetail returns the
+    //  DataTable assigned to dgvSales.DataSource. btnGenerate_Click just calls
+    //  Generate again with whatever the date pickers now hold.
+    //
+    //  The medicine ComboBox holds "id - name strength" strings, so
+    //  SelectedMedicineId parses the id back off the front of the selected text
+    //  and passes 0 when "All my medicines" is chosen.
+    //  Export writes the DataTable already on screen through
+    //  ReportService.ExportToCsv; it does not re-query.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Requirement 13.
     ///

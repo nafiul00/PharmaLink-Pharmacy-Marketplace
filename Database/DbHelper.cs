@@ -4,6 +4,13 @@ using Microsoft.Data.SqlClient;
 
 namespace PharmaLinkApp.Database
 {
+    // -------------------------------------------------------------------------
+    //  Layer: data access.   Forms -> Services -> DbHelper -> SQL Server.
+    //  Connection string: App.config, the entry named "db", read on line 24.
+    //  Used by all ten classes in Services/; no form opens a connection itself.
+    //  Every method takes SqlParameter[], so no query is built by concatenation.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// The one place in the application that knows how to reach SQL Server.
     ///
@@ -32,15 +39,25 @@ namespace PharmaLinkApp.Database
         /// <summary>Runs a SELECT and returns the whole result set as a DataTable, ready for a DataGridView.</summary>
         public DataTable ExecuteTable(string sql, params SqlParameter[] parameters)
         {
+            // Two nested using blocks: both the connection and the command are disposed
+            // even if the query throws, so a failed query never leaks a pooled connection.
             using (SqlConnection conn = GetConnection())
             using (SqlCommand cmd = new SqlCommand(sql, conn))
             {
+                // THE line that prevents SQL injection. Values arrive as SqlParameter
+                // objects and are sent separately from the query text, so input like
+                // '; DROP TABLE Users; -- is compared as a literal string and matches
+                // nothing. Because every method here has this same signature, there is
+                // no code path in the application that can build SQL by concatenation.
                 if (parameters != null && parameters.Length > 0)
                     cmd.Parameters.AddRange(parameters);
 
                 DataTable table = new DataTable();
                 try
                 {
+                    // The adapter opens the connection, runs the query, builds the columns
+                    // from the result set and closes the connection again. That is why this
+                    // method never calls conn.Open() itself, unlike ExecuteNonQuery below.
                     using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
                     {
                         adapter.Fill(table);
@@ -48,9 +65,12 @@ namespace PharmaLinkApp.Database
                 }
                 catch (SqlException ex)
                 {
+                    // Translate here, once, instead of in 28 forms. Describe() maps the
+                    // error number to a sentence and the original exception is kept as
+                    // InnerException, so no screen ever shows raw SQL Server text.
                     throw new DataAccessException(Describe(ex), ex);
                 }
-                return table;
+                return table;   // bound straight to a DataGridView by the calling form
             }
         }
 

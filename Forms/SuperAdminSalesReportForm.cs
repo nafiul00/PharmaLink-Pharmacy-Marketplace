@@ -144,8 +144,18 @@ namespace PharmaLinkApp.Forms
         /// <summary>The bold total row the report ends with.</summary>
         private void AppendTotalRow(decimal gross, decimal commission, int units, int orders)
         {
+            // The total row is built in C# and APPENDED to the DataTable before binding,
+            // not produced by SQL. It could have been done with GROUP BY ... WITH
+            // ROLLUP, but that would put a summary row inside a result set that other
+            // callers (the CSV export, the tiles) treat as one-row-per-pharmacy.
+            // Keeping it a presentation concern leaves the query reusable.
+            //
+            // NewRow() creates a row already shaped to this table's columns; it is not
+            // part of the table until Rows.Add() at the end of the method.
             DataRow total = _current.NewRow();
-            total["PharmacyId"] = 0;
+            total["PharmacyId"] = 0;                      // 0 marks it as not a real shop
+            // CellFormatting looks for exactly this text to draw the row bold, so the
+            // label is effectively a flag as well as a caption.
             total["PharmacyName"] = "PLATFORM TOTAL";
             total["Area"] = "";
             total["TotalOrders"] = orders;

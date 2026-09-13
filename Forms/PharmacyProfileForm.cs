@@ -182,9 +182,17 @@ namespace PharmaLinkApp.Forms
 
             try
             {
+                // PharmacyId comes from the session, never from the form, so an owner can
+                // only ever edit their own shop - there is no id field on screen to
+                // tamper with. Note which fields are NOT passed: LicenseNo, Status and
+                // CommissionRate. The licence is shown read only because changing it
+                // would mean a new licence and a fresh approval; the other two belong to
+                // the Super Admin, so the owner's UPDATE simply cannot touch them.
                 if (_pharmacies.UpdateProfile(UserSession.PharmacyId, txtShopName.Text, cmbArea.Text,
                                               txtAddress.Text, txtContact.Text, txtLogoPath.Text))
                 {
+                    // Keep the cached session name in step with the database, or the
+                    // dashboard header would keep showing the old shop name until logout.
                     UserSession.PharmacyName = txtShopName.Text.Trim();
                     lblStatus.Text = "Shop profile saved. Customers see the new details immediately.";
                     MessageBox.Show("Your pharmacy profile has been updated.", "PharmaLink",

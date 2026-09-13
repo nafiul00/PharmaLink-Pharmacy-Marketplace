@@ -5,6 +5,20 @@ using PharmaLinkApp.Models;
 
 namespace PharmaLinkApp.Services
 {
+    // -------------------------------------------------------------------------
+    //  Layer: service.  Called by CheckoutForm, CartForm, OrderHistoryForm,
+    //  InvoiceForm and AdminDashboard. Reads and writes through DbHelper.
+    //
+    //  Checkout() and Cancel() are the only methods that open their own
+    //  SqlConnection rather than using DbHelper's helpers, because both need one
+    //  explicit transaction spanning several statements while DbHelper opens and
+    //  closes a connection per call. A SqlException raised here therefore does
+    //  not pass through DbHelper.Describe(), which is why Program.ReportFatal
+    //  carries a second SqlException branch.
+    //
+    //  Every statement carries @PharmacyId, taken from UserSession.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Checkout, order history, invoices and order status.
     ///
@@ -32,9 +46,16 @@ namespace PharmaLinkApp.Services
         public int Checkout(int customerId, int pharmacyId, string deliveryAddress,
                             string paymentMethod, decimal deliveryCharge, out string message)
         {
+            // This method opens its OWN connection instead of using DbHelper's helpers,
+            // because all five statements below must share one transaction and DbHelper
+            // deliberately opens and closes a connection per call.
             using (SqlConnection conn = _db.GetConnection())
             {
                 conn.Open();
+                // Serializable is the strictest isolation level: it takes range locks, so
+                // no other checkout can read or change the stock rows this transaction is
+                // working with until it commits. That is what makes the stock re-check
+                // below trustworthy rather than merely hopeful.
                 using (SqlTransaction tx = conn.BeginTransaction(IsolationLevel.Serializable))
                 {
                     try
@@ -53,26 +74,46 @@ WHERE  ct.CustomerId = @CustomerId
   AND  (ct.Quantity > m.Stock OR m.IsActive = 0);";
 
                         string problem;
+                        // Every command in this transaction must be told which transaction
+                        // it belongs to - that is the third constructor argument, tx.
+                        // Leaving it out throws, because the connection has an open
+                        // transaction that the command is not enlisted in.
                         using (SqlCommand cmd = new SqlCommand(stockCheck, conn, tx))
                         {
                             cmd.Parameters.AddWithValue("@CustomerId", customerId);
                             cmd.Parameters.AddWithValue("@PharmacyId", pharmacyId);
+
+                            // ExecuteScalar returns the first column of the first row, or
+                            // null when the query found nothing. Here "found nothing" is
+                            // the GOOD outcome: no offending medicine means every line is
+                            // still in stock and still on sale.
                             object result = cmd.ExecuteScalar();
                             problem = result == null || result == DBNull.Value ? null : result.ToString();
                         }
 
                         if (problem != null)
                         {
+                            // Something sold out, or was delisted, between adding it to the
+                            // cart and pressing Confirm. Roll back before anything is
+                            // written and hand the medicine's name back so the message can
+                            // name it rather than saying "something went wrong".
                             tx.Rollback();
                             message = "'" + problem + "' is no longer available in the quantity you asked for. " +
                                       "Please update your cart and try again.";
-                            return 0;
+                            return 0;      // 0 is the "no order was created" signal to the form
                         }
 
                         // ---- 2. the order header, commission frozen at today's rate ----
                         const string placeOrder = @"
 DECLARE @Total DECIMAL(12,2), @CommRate DECIMAL(5,2), @NewOrderId INT;
 
+-- Work out what this half of the basket costs, with today's discount already applied.
+-- OUTER APPLY runs the little offer lookup once per cart line and, being OUTER, keeps
+-- the line even when no offer exists (d.Pct is then NULL, which ISNULL turns into 0).
+-- MAX() is used because a medicine could legitimately have more than one offer running,
+-- and the customer should get the best of them.
+-- Computing the total HERE, in the same transaction, rather than trusting a number the
+-- form calculated, means the price cannot drift between the screen and the database.
 SELECT  @Total = CAST(SUM(ct.Quantity * m.UnitPrice * (1 - ISNULL(d.Pct,0)/100.0)) AS DECIMAL(12,2))
 FROM    Cart ct
         INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId
@@ -82,14 +123,23 @@ FROM    Cart ct
                        AND  CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate) d
 WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;
 
+-- Read the shop's commission rate as it stands RIGHT NOW.
 SELECT  @CommRate = CommissionRate FROM Pharmacies WHERE PharmacyId = @PharmacyId;
 
+-- The order header. CommissionAmount is calculated once, here, and STORED - it is not a
+-- computed column and nothing ever recalculates it. That is what lets the Super Admin
+-- change a shop's rate next month without rewriting what was owed on this order.
+-- TotalAmount is absent from the column list on purpose: it IS a computed column
+-- (ItemsTotal + DeliveryCharge), so SQL Server refuses an explicit value for it.
 INSERT INTO Orders (CustomerId, PharmacyId, ItemsTotal, DeliveryCharge, CommissionAmount,
                     DeliveryAddress, PaymentMethod, Status)
 VALUES (@CustomerId, @PharmacyId, @Total, @DeliveryCharge,
         CAST(@Total * @CommRate / 100.0 AS DECIMAL(12,2)),
         @DeliveryAddress, @PaymentMethod, 'Placed');
 
+-- SCOPE_IDENTITY(), not @@IDENTITY: it returns the id generated by THIS statement in
+-- this scope, so a trigger inserting elsewhere could never hand back the wrong number.
+-- Orders starts at 1001, so the first invoice is 1001 rather than 1.
 SET @NewOrderId = SCOPE_IDENTITY();
 
 -- one line per cart row, at the discounted price the customer actually saw
@@ -300,8 +350,16 @@ ORDER BY o.OrderDate DESC;";
 UPDATE  Orders
 SET     Status = 'Confirmed'
 WHERE   OrderId = @OrderId
-  AND   PharmacyId = @PharmacyId
+  AND   PharmacyId = @PharmacyId              -- isolation: only your own orders
+  -- Only a Placed order can become Confirmed. Naming the expected current status
+  -- makes this update idempotent: pressing Confirm twice changes one row the first
+  -- time and zero the second, instead of silently re-confirming.
   AND   Status = 'Placed'
+  -- The prescription gate, enforced by the DATABASE rather than by a disabled button.
+  -- NOT EXISTS returns true only when no prescription on this order is still waiting,
+  -- so an order with a Pending or Rejected Rx cannot be dispatched even if the form
+  -- were bypassed. The dashboard disables the button too, but that is a courtesy;
+  -- THIS is the rule.
   AND   NOT EXISTS (SELECT 1 FROM Prescriptions p
                     WHERE p.OrderId = @OrderId AND p.VerifyStatus <> 'Approved');";
 
@@ -331,17 +389,27 @@ WHERE   OrderId = @OrderId
         public bool Cancel(int orderId, int pharmacyId)
         {
             const string sql = @"
+-- XACT_ABORT ON means any runtime error aborts the whole batch rather than leaving
+-- a half applied transaction open. Belt and braces alongside the CATCH below.
 SET XACT_ABORT ON;
 BEGIN TRY
     BEGIN TRANSACTION;
 
     DECLARE @Cancelled INT = 0;
 
+    -- THE ELIGIBILITY TEST, MADE ONCE. This is the fix for a real bug: an earlier
+    -- version guarded the two statements separately, restocking whenever the order
+    -- was not already Cancelled but only flipping the status when it was not
+    -- Delivered. Cancelling a DELIVERED order therefore put the units back on the
+    -- shelf and left the order still reading Delivered - free stock, silently.
+    -- Testing once, here, means both statements share exactly one condition.
     IF EXISTS (SELECT 1 FROM Orders
                WHERE OrderId    = @OrderId
                  AND PharmacyId = @PharmacyId
                  AND Status NOT IN ('Delivered', 'Cancelled'))
     BEGIN
+        -- Put every unit on this order back. Joining OrderItems gives one row per
+        -- line, so each medicine is credited with its own quantity.
         UPDATE  m SET m.Stock = m.Stock + oi.Quantity
         FROM    Medicines m INNER JOIN OrderItems oi ON oi.MedicineId = m.MedicineId
         WHERE   oi.OrderId = @OrderId;
@@ -351,13 +419,18 @@ BEGIN TRY
           AND   PharmacyId = @PharmacyId
           AND   Status NOT IN ('Delivered', 'Cancelled');
 
+        -- @@ROWCOUNT is read IMMEDIATELY after the UPDATE, because any later
+        -- statement would overwrite it. 1 means the order really was cancelled.
         SET @Cancelled = @@ROWCOUNT;
     END
 
     COMMIT TRANSACTION;
-    SELECT @Cancelled;
+    SELECT @Cancelled;              -- handed back to C# as the success flag
 END TRY
 BEGIN CATCH
+    -- XACT_STATE() <> 0 means a transaction is still open and must be undone.
+    -- Rolling back first and THEN rethrowing keeps the original error intact for
+    -- DbHelper to translate, instead of masking it with a rollback failure.
     IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
     THROW;
 END CATCH;";

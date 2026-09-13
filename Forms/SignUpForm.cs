@@ -6,6 +6,29 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation, modal dialog opened by LoginForm. Uses AuthService
+    //  and PharmacyService (only to suggest existing areas).
+    //
+    //  Load order:
+    //      SignUpForm_Load -> ApplyTheme -> fill the "Register as" ComboBox
+    //                      -> LoadAreaSuggestions -> ValidateAll
+    //
+    //  The "Register as" ComboBox decides which path runs: index 1 is a pharmacy
+    //  owner, which enables grpPharmacy and changes the button text. Every field
+    //  is validated as it is typed through Field_Changed -> ValidateAll, and the
+    //  Create button stays disabled until every rule passes.
+    //
+    //  btnCreate_Click checks EmailExists, PhoneExists and, for an owner,
+    //  LicenseExists before writing, so the user gets a message under the right
+    //  field instead of a UNIQUE violation. Those database constraints are what
+    //  actually enforce uniqueness; these checks only make the failure readable.
+    //  It then calls RegisterCustomer, or RegisterPharmacyOwner which writes the
+    //  Users row and the Pharmacies row inside one transaction.
+    //
+    //  RegisteredEmail is read back by LoginForm to pre-fill the email box.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Registration for both kinds of account (requirements 10 and 19).
     ///

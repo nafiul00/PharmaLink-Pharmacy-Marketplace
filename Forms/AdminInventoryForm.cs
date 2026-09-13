@@ -6,6 +6,24 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation.  Opened by AdminDashboard. Uses MedicineService.
+    //
+    //  Load order:
+    //      AdminInventoryForm_Load -> ApplyTheme -> BuildTiles -> LoadEverything
+    //
+    //  LoadEverything runs two separate queries: GetLowStock fills dgvLowStock
+    //  and GetInventory fills dgvInventory, each by assigning the returned
+    //  DataTable to that grid's DataSource. The four tile figures are totalled
+    //  in C# by walking the inventory table, because they are sums of a result
+    //  set that has already been fetched.
+    //
+    //  Stock is compared against MinStock inside the SQL, so ShortfallUnits
+    //  arrives already calculated rather than being worked out on screen.
+    //  Restock reads txtRestockUnits through Validator.IsPositiveInt, calls
+    //  MedicineService.AddStock and then reloads both grids.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Requirement 12. Four summary tiles, the low stock alert panel and the
     /// full inventory grid.

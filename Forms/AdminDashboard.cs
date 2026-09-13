@@ -238,10 +238,21 @@ namespace PharmaLinkApp.Forms
 
             // An order whose prescription is still Pending cannot be confirmed,
             // and the button explains why rather than failing silently.
+            // The four buttons encode the order lifecycle:
+            //      Placed -> Confirmed -> Delivered,  with Cancelled available until
+            //      the order has actually been delivered.
+            // Each button is enabled only for the status it can legally act on, so an
+            // illegal transition is unreachable rather than merely refused.
+            //
+            // Confirm additionally needs rxState == "Clear". That value is computed by
+            // the ORDER QUERY, not here: a CASE with an EXISTS against Prescriptions.
+            // The same rule is enforced again inside OrderService.Confirm, so disabling
+            // the button is a courtesy and the database is the guarantee.
             btnConfirmOrder.Enabled = hasRow && status == "Placed" && rxState == "Clear";
             btnDeliverOrder.Enabled = hasRow && status == "Confirmed";
+            // Cancel restocks, so it must not be possible once the goods are delivered.
             btnCancelOrder.Enabled = hasRow && status != "Delivered" && status != "Cancelled";
-            btnViewInvoice.Enabled = hasRow;
+            btnViewInvoice.Enabled = hasRow;   // an invoice exists for any order, any status
 
             if (hasRow && status == "Placed" && rxState != "Clear")
                 btnConfirmOrder.Text = "Rx not verified";

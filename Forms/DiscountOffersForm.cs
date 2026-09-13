@@ -7,6 +7,26 @@ using PharmaLinkApp.Services;
 
 namespace PharmaLinkApp.Forms
 {
+    // -------------------------------------------------------------------------
+    //  Layer: presentation.  Opened by AdminDashboard, and by AdminMedicineForm
+    //  which passes a medicine id to preselect. Uses OfferService and
+    //  MedicineService.
+    //
+    //  Load order:
+    //      DiscountOffersForm_Load -> ApplyTheme -> LoadMedicines
+    //                              -> set the default 14 day range -> LoadGrid
+    //                              -> SelectMedicine -> ValidateAll
+    //
+    //  LoadGrid assigns OfferService.GetForPharmacy to dgvOffers.DataSource. The
+    //  OfferState column is produced by a CASE expression in that query, not in
+    //  C#, and CellFormatting colours each row from it.
+    //
+    //  Selecting a grid row copies its values into the editor fields. _loading is
+    //  set to true while that happens so Field_Changed does not revalidate in the
+    //  middle of the fill. Create and Update call OfferService, whose statements
+    //  join Medicines and filter on PharmacyId.
+    // -------------------------------------------------------------------------
+
     /// <summary>
     /// Requirement 14. The pharmacy owner's time limited percentage discounts.
     ///

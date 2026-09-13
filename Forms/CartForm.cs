@@ -130,8 +130,16 @@ namespace PharmaLinkApp.Forms
                 decimal itemsTotal = _cart.GetItemsTotal(UserSession.UserId);
                 decimal discount = _cart.GetDiscountTotal(UserSession.UserId);
 
+                // GetPharmacyGroups collapses the basket to one row per pharmacy with a
+                // GROUP BY. That row count is not cosmetic: it is exactly how many
+                // ORDERS checkout will create, because an order belongs to one pharmacy
+                // (Orders.PharmacyId is a single foreign key, not a list).
                 DataTable groups = _cart.GetPharmacyGroups(UserSession.UserId, DeliveryCharge);
                 int pharmacyCount = groups.Rows.Count;
+
+                // Hence delivery is charged PER ORDER, not per basket. Two pharmacies
+                // means two deliveries from two different shops, so two charges - and
+                // the summary panel says so before the customer commits to anything.
                 decimal delivery = DeliveryCharge * pharmacyCount;
 
                 lblItemsValue.Text = UiTheme.Money(itemsTotal);

@@ -28,15 +28,20 @@ namespace PharmaLinkApp.Services
         public bool AddReview(int customerId, int medicineId, int orderId, int rating, string comment, out string message)
         {
             const string sql = @"
+-- INSERT ... SELECT ... WHERE EXISTS, not INSERT ... VALUES. The row is only written
+-- if the EXISTS proves the purchase, so the check and the write are one statement and
+-- cannot drift apart. If the proof fails, SELECT returns no rows, nothing is inserted
+-- and ExecuteNonQuery returns 0 - no exception, just a refusal.
 INSERT INTO Reviews (CustomerId, MedicineId, OrderId, Rating, Comment)
 SELECT  @CustomerId, @MedicineId, @OrderId, @Rating, @Comment
 WHERE   EXISTS (SELECT 1
                 FROM   OrderItems oi
                        INNER JOIN Orders o ON o.OrderId = oi.OrderId
-                WHERE  oi.OrderId    = @OrderId
-                  AND  oi.MedicineId = @MedicineId
-                  AND  o.CustomerId  = @CustomerId
-                  AND  o.Status      = 'Delivered');";
+                -- All four conditions together are what makes a review VERIFIED:
+                WHERE  oi.OrderId    = @OrderId       -- that order
+                  AND  oi.MedicineId = @MedicineId    -- really contained this medicine
+                  AND  o.CustomerId  = @CustomerId    -- and the order was YOURS
+                  AND  o.Status      = 'Delivered');";   // and it actually arrived
 
             try
             {
