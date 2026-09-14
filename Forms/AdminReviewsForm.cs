@@ -283,48 +283,39 @@ namespace PharmaLinkApp.Forms
             DataGridViewRow row = dgvReviews.CurrentRow;
             if (row == null) return;   // re-checked even though the button is disabled without a row
 
-            // Read before the message is built, because both values are used in its text.
             int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);
-            // The rating decides which closing sentence is shown further down.
-            int rating = Convert.ToInt32(row.Cells["Rating"].Value);
 
-            // HONEST NOTE, and worth knowing before anyone asks: this button writes
-            // NOTHING to the database. There is no reported flag column on Reviews, so
-            // nothing here changes the review or notifies anyone - the message box is
-            // the entire behaviour.
-            //
-            // It is defensible rather than broken, because 1 and 2 star reviews already
-            // appear in the Super Admin's moderation queue by default, so the abusive
-            // ones surface without being reported. But it is incomplete: a ReportedAt
-            // or IsReported column on Reviews, set here and surfaced in that queue,
-            // would be the honest next step. Do not claim this files a report.
-            //
-            // Stated precisely, so the gap is not overstated either: the handler reads two
-            // cells, shows the message box below and writes a line into lblStatus. It calls no
-            // service method, opens no connection and issues no INSERT or UPDATE. The Reviews
-            // table has columns ReviewId, CustomerId, MedicineId, OrderId, Rating, Comment,
-            // ReviewDate and IsHidden, and there is nowhere in that schema for a report to be
-            // recorded. Nothing is persisted, so the flag does not survive closing this form,
-            // and the Super Admin's screen shows no trace of it.
-            MessageBox.Show(
-                "Review " + reviewId + " has been flagged for the Super Admin.\r\n\r\n" +
-                "It stays visible to customers until the Super Admin reviews it. Nothing on this screen " +
-                "changes the review itself: only the Super Admin can set IsHidden, and even then the row " +
-                "is never deleted.\r\n\r\n" +
-                // The closing sentence depends on the rating, because the two cases genuinely
-                // differ. A 1 or 2 star review is already in the moderation queue, which the
-                // Super Admin opens filtered to that band, so it will be seen either way. A
-                // higher rated one will not appear there, which is why that branch asks the
-                // owner to contact support rather than implying this screen has done it.
-                (rating <= 2
-                    ? "Reviews of 1 and 2 stars already appear in the moderation queue by default."
-                    : "Higher rated reviews are rarely hidden, so please add context when you contact support."),
-                "Reported to the Super Admin", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Asked first, because a report puts the review in front of the Super Admin and
+            // the owner should be sure before sending it.
+            DialogResult answer = MessageBox.Show(
+                "Report review " + reviewId + " to the Super Admin?\r\n\r\n" +
+                "It stays visible to customers until the Super Admin decides. Only the Super Admin " +
+                "can hide a review, and even then the row is never deleted.",
+                "Report review", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes) return;
 
-            // A status line, not a database write. It is accurate for a low rated review, which
-            // the moderation queue shows by default, and it is the sentence that would need
-            // revisiting alongside the IsReported column described above.
-            lblStatus.Text = "Review " + reviewId + " reported. The Super Admin's Moderate Reviews screen will show it.";
+            try
+            {
+                // Report sets Reviews.IsReported = 1, scoped to this pharmacy by the join to
+                // Medicines. The Super Admin's Moderate Reviews queue always includes reported
+                // reviews, whatever their star rating, and lists them first.
+                if (_reviews.Report(reviewId, UserSession.PharmacyId))
+                {
+                    lblStatus.Text = "Review " + reviewId + " reported. It is now at the top of the Super Admin's Moderate Reviews queue.";
+                }
+                else
+                {
+                    // 0 rows: the review was hidden in the meantime, or it is not about this shop.
+                    MessageBox.Show("Review " + reviewId + " could not be reported. It may already have been hidden by the Super Admin.",
+                        "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    LoadGrid();
+                }
+            }
+            catch (Exception ex)
+            {
+                // DbHelper has already turned any SqlException into a readable sentence.
+                MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         // Both the rating combo and the Refresh button point at this one handler, because the

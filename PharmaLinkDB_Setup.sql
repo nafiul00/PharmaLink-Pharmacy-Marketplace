@@ -277,6 +277,8 @@ CREATE TABLE Reviews (
         CONSTRAINT DF_Reviews_Date      DEFAULT (SYSDATETIME()),
     IsHidden        BIT                             NOT NULL
         CONSTRAINT DF_Reviews_Hidden    DEFAULT (0),
+    IsReported      BIT                             NOT NULL
+        CONSTRAINT DF_Reviews_Reported  DEFAULT (0),
 
     CONSTRAINT PK_Reviews           PRIMARY KEY (ReviewId),
     CONSTRAINT FK_Reviews_Customer  FOREIGN KEY (CustomerId) REFERENCES Users(UserId),

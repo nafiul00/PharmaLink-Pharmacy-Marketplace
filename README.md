@@ -365,6 +365,7 @@ erDiagram
         nvarchar Comment
         datetime2 ReviewDate
         bit IsHidden
+        bit IsReported
     }
     OFFERS {
         int OfferId PK
@@ -549,6 +550,7 @@ Ratings and comments. `OrderId` is carried so the application can prove the revi
 | `Comment` | NVARCHAR(500) | NULL | Written feedback |
 | `ReviewDate` | DATETIME2(0) | NOT NULL, DEFAULT | When the review was written |
 | `IsHidden` | BIT | NOT NULL, DEFAULT 0 | Set to 1 by Super Admin moderation instead of deleting |
+| `IsReported` | BIT | NOT NULL, DEFAULT 0 | Set to 1 when the pharmacy owner reports the review; cleared when the Super Admin hides or restores it |
 | *(composite)* | UNIQUE | `(CustomerId, MedicineId, OrderId)` | One review per medicine per order |
 
 ### 9. Offers
@@ -780,7 +782,7 @@ GROUP BY ph.PharmacyId, ph.PharmacyName, ph.Area, ph.CommissionRate
 ORDER BY GrossSales DESC;
 ```
 
-The Super Admin runs this as it stands to see every pharmacy. The pharmacy owner runs **the same query with an added `WHERE ph.PharmacyId = @PharmacyId`** and sees only his own row, which is the clearest possible demonstration of data isolation: one query, two role scopes. Commission is recomputed from the pharmacy rate rather than summed from `Orders`, because the join to `OrderItems` multiplies the order rows and would inflate a plain `SUM` of the header column.
+The Super Admin runs this as it stands to see every pharmacy. The pharmacy owner runs **the same query with an added `WHERE ph.PharmacyId = @PharmacyId`** and sees only his own row, which is the clearest possible demonstration of data isolation: one query, two role scopes. Commission is the `CommissionAmount` frozen on each order at checkout, summed in its own derived table, because the join to `OrderItems` multiplies the order rows and would inflate a plain `SUM` of the header column.
 
 ### 8.8 Low stock alert
 *Form: `AdminInventoryForm` — requirement 12*
@@ -979,10 +981,10 @@ FROM    Reviews r
         INNER JOIN Users      u  ON u.UserId      = r.CustomerId
         INNER JOIN Medicines  m  ON m.MedicineId  = r.MedicineId
         INNER JOIN Pharmacies ph ON ph.PharmacyId = m.PharmacyId
-WHERE   r.Rating <= 2 AND r.IsHidden = 0
-ORDER BY r.ReviewDate DESC;
+WHERE   (r.Rating <= 2 OR r.IsReported = 1) AND r.IsHidden = 0   -- reported reviews always appear
+ORDER BY r.IsReported DESC, r.ReviewDate DESC;
 
-UPDATE Reviews SET IsHidden = 1 WHERE ReviewId = @ReviewId;   -- hidden, never deleted
+UPDATE Reviews SET IsHidden = 1, IsReported = 0 WHERE ReviewId = @ReviewId;   -- hidden, never deleted
 ```
 
 The user list joins `Users` to `Pharmacies` so a pharmacy owner's shop name appears beside his name, and it accepts a keyword and a status from the search box and the Status ComboBox — an empty value means *no filter*. Categories are deactivated rather than deleted, because `Medicines` rows point at them.

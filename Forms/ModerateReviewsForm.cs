@@ -159,9 +159,16 @@ namespace PharmaLinkApp.Forms
                     dgvReviews.Columns["OrderId"].FillWeight = 40;
                     dgvReviews.Columns["IsHidden"].HeaderText = "Hidden";
                     dgvReviews.Columns["IsHidden"].FillWeight = 40;
+                    // Ticked when a pharmacy owner reported the review from Customer Reviews.
+                    dgvReviews.Columns["IsReported"].HeaderText = "Reported";
+                    dgvReviews.Columns["IsReported"].FillWeight = 48;
                 }
 
-                lblStatus.Text = table.Rows.Count + " review(s) in the queue.";
+                // Reported reviews are counted separately, because each one is a pharmacy
+                // owner waiting on a decision.
+                int reported = table.Select("IsReported = true").Length;
+                lblStatus.Text = table.Rows.Count + " review(s) in the queue" +
+                                 (reported > 0 ? ", " + reported + " reported by a pharmacy." : ".");
                 // Rebinding can leave a different row current, or none, so the comment box
                 // and the two buttons are recomputed rather than left as they were.
                 UpdateSelection();
@@ -205,7 +212,9 @@ namespace PharmaLinkApp.Forms
             // Only reached when the review is still visible. Two stars and below is the same
             // threshold the default filter uses, so the rows that matter most stay marked
             // even when the operator has widened the filter to all ratings.
-            else if (rating != null && rating != DBNull.Value && Convert.ToInt32(rating) <= 2)
+            // A review a pharmacy reported is marked the same way, whatever its star rating.
+            else if ((rating != null && rating != DBNull.Value && Convert.ToInt32(rating) <= 2) ||
+                     (row.Cells["IsReported"].Value is bool reported && reported))
             {
                 row.DefaultCellStyle.BackColor = UiTheme.LowStockBack;
                 row.DefaultCellStyle.ForeColor = UiTheme.TextDark;
@@ -303,9 +312,11 @@ namespace PharmaLinkApp.Forms
             // It is the same pattern as Medicines.IsActive and the suspension of a
             // pharmacy: throughout this application a record with history behind it is
             // deactivated rather than destroyed.
-            _reviews.SetHidden(reviewId, true);
-            lblStatus.Text = "Review " + reviewId + " hidden. It no longer counts towards " + pharmacy + "'s average rating.";
+            if (!ApplyHidden(reviewId, true)) return;
+            // LoadGrid first, then the message: LoadGrid writes the row count into lblStatus,
+            // so a message set before it would be overwritten before anyone could read it.
             LoadGrid();   // re-query so the row redraws greyed out, or leaves the queue
+            lblStatus.Text = "Review " + reviewId + " hidden. It no longer counts towards " + pharmacy + "'s average rating.";
         }
 
         private void btnUnhide_Click(object sender, EventArgs e)
@@ -319,9 +330,31 @@ namespace PharmaLinkApp.Forms
             // asked for, because restoring a customer's own words is the harmless direction
             // and it is undone by the button beside it. This only works at all because the
             // hide never destroyed anything.
-            _reviews.SetHidden(reviewId, false);
-            lblStatus.Text = "Review " + reviewId + " restored and is visible to customers again.";
+            if (!ApplyHidden(reviewId, false)) return;
             LoadGrid();
+            lblStatus.Text = "Review " + reviewId + " restored and is visible to customers again.";
+        }
+
+        // Runs the update for both buttons and reports failure, so neither button can show a
+        // success message for a write that did not happen.
+        private bool ApplyHidden(int reviewId, bool hidden)
+        {
+            try
+            {
+                // SetHidden returns true only when exactly one row changed.
+                if (_reviews.SetHidden(reviewId, hidden)) return true;
+
+                MessageBox.Show("Review " + reviewId + " was not found. The list has been refreshed.",
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                LoadGrid();
+                return false;
+            }
+            catch (Exception ex)
+            {
+                // DbHelper has already turned any SqlException into a readable sentence.
+                MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
         }
 
         // Both the rating combo box and the Include hidden tick box are wired here, and the

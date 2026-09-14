@@ -185,7 +185,9 @@ ORDER BY o.OrderDate DESC, o.OrderId;";
         // Four out parameters rather than a return value, because the caller wants several
         // numbers from ONE round trip. Returning a small object would work equally well; out
         // parameters keep the tile code a straight sequence of assignments with no extra type.
-        public void GetEarningsTotals(int pharmacyId, DateTime fromDate, DateTime toDate,
+        // medicineId = 0 means every medicine, exactly as in GetSalesDetail, so the tiles and
+        // the grid on the earnings screen always describe the same set of order lines.
+        public void GetEarningsTotals(int pharmacyId, DateTime fromDate, DateTime toDate, int medicineId,
                                       out decimal grossSales, out decimal commission,
                                       out decimal netEarnings, out int unitsSold)
         {
@@ -194,29 +196,37 @@ ORDER BY o.OrderDate DESC, o.OrderId;";
 -- trading would otherwise hand the C# side a DBNull for each tile.
 SELECT  ISNULL(SUM(oi.Subtotal), 0)            AS GrossSales,
         ISNULL(SUM(oi.Quantity), 0)            AS UnitsSold,
-        -- Commission is taken in a SCALAR SUBQUERY, not from the join below, and for the same
-        -- reason the earnings report uses two derived tables: the join to OrderItems repeats
-        -- each order once per line, so summing the header's CommissionAmount there would count
-        -- a three line order's commission three times. Read on its own over Orders, it is
-        -- counted exactly once per order.
-        ISNULL((SELECT SUM(o2.CommissionAmount)
-                FROM   Orders o2
-                -- o2 is a separate alias over the same table, so this subquery must repeat the
-                -- three filters rather than inherit them; if it did not, the commission would
-                -- cover a different set of orders from the sales figures beside it.
-                WHERE  o2.PharmacyId = @PharmacyId
-                  AND  o2.Status <> 'Cancelled'
-                  AND  o2.OrderDate BETWEEN @FromDate AND @ToDate), 0) AS Commission
+        CASE WHEN @MedicineId = 0
+             -- ALL MEDICINES: commission is taken in a SCALAR SUBQUERY, not from the join
+             -- below, for the same reason the earnings report uses two derived tables: the
+             -- join to OrderItems repeats each order once per line, so summing the header's
+             -- CommissionAmount there would count a three line order's commission three times.
+             THEN ISNULL((SELECT SUM(o2.CommissionAmount)
+                          FROM   Orders o2
+                          -- o2 is a separate alias over the same table, so this subquery must
+                          -- repeat the three filters rather than inherit them.
+                          WHERE  o2.PharmacyId = @PharmacyId
+                            AND  o2.Status <> 'Cancelled'
+                            AND  o2.OrderDate BETWEEN @FromDate AND @ToDate), 0)
+             -- ONE MEDICINE: commission is stored per order, not per line, so each line is
+             -- given its share of its order's commission: Subtotal / ItemsTotal of that order.
+             -- Summing per line is correct here, because each line carries only its own share.
+             -- NULLIF avoids dividing by zero on an order whose items total is 0.
+             ELSE ISNULL(CAST(SUM(oi.Subtotal * o.CommissionAmount / NULLIF(o.ItemsTotal, 0)) AS DECIMAL(12,2)), 0)
+        END                                    AS Commission
 FROM    Orders o
         INNER JOIN OrderItems oi ON oi.OrderId = o.OrderId   -- needed for Subtotal and Quantity, which only exist per line
 WHERE   o.PharmacyId = @PharmacyId
   AND   o.Status    <> 'Cancelled'
-  AND   o.OrderDate BETWEEN @FromDate AND @ToDate;";
+  AND   o.OrderDate BETWEEN @FromDate AND @ToDate
+  -- The same optional medicine filter as the detail grid.
+  AND   (@MedicineId = 0 OR oi.MedicineId = @MedicineId);";
 
             DataTable table = _db.ExecuteTable(sql,
                 DbHelper.P("@PharmacyId", pharmacyId),
                 DbHelper.P("@FromDate", fromDate.Date),
-                DbHelper.P("@ToDate", toDate.Date.AddDays(1).AddSeconds(-1)));   // whole-day end boundary, as above
+                DbHelper.P("@ToDate", toDate.Date.AddDays(1).AddSeconds(-1)),   // whole-day end boundary, as above
+                DbHelper.P("@MedicineId", medicineId));
 
             // Seeded before the read, so every out parameter is definitely assigned even on the
             // path where the query comes back with no rows at all. C# refuses to compile a

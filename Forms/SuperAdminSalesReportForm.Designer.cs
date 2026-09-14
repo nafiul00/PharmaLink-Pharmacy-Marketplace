@@ -143,7 +143,7 @@ namespace PharmaLinkApp.Forms
             lblNote.Name = "lblNote";
             lblNote.Size = new Size(1194, 40);
             lblNote.TabIndex = 12;
-            lblNote.Text = "Commission is recomputed from each pharmacy's own rate rather than summed from the Orders header, because the join to OrderItems multiplies the order rows and a plain SUM of the header column would inflate the figure. The last row of the grid is the platform total.";
+            lblNote.Text = "Commission is the amount frozen on each order at checkout (Orders.CommissionAmount), summed in its own subquery, because the join to OrderItems repeats each order once per line and a plain SUM would inflate the figure. The last row of the grid is the platform total.";
             //
             lblStatus.AutoSize = false;
             lblStatus.Location = new Point(20, 644);

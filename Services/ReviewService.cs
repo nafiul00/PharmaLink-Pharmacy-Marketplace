@@ -91,10 +91,12 @@ WHERE   EXISTS (SELECT 1
             catch (Exception ex)
             {
                 // The UNIQUE constraint fires when the same purchase is rated twice.
-                // The constraint is named in the schema precisely so it can be recognised
-                // here; an unnamed constraint would arrive as a generated name and this
-                // test would have nothing dependable to match on.
-                if (ex.Message.Contains("UQ_Reviews_OneEach"))
+                // DbHelper has already replaced the message with a general sentence, so the
+                // constraint name is no longer in ex.Message. The original SqlException is
+                // kept as InnerException, and its error number is what identifies a
+                // duplicate: 2627 for a UNIQUE constraint, 2601 for a unique index.
+                if (ex.InnerException is Microsoft.Data.SqlClient.SqlException sqlEx &&
+                    (sqlEx.Number == 2627 || sqlEx.Number == 2601))
                     message = "You have already reviewed this medicine on this order.";
                 else
                     // Anything else is passed through rather than swallowed. It is already
@@ -256,7 +258,8 @@ WHERE   m.PharmacyId = @Id AND r.IsHidden = 0;",
 SELECT  r.ReviewId, u.FullName AS Reviewer, m.MedicineName, ph.PharmacyName,
         -- IsHidden is selected as well as filtered on, so the grid can show which rows
         -- have already been dealt with when the administrator is viewing everything.
-        r.Rating, r.Comment, r.ReviewDate, r.OrderId, r.IsHidden
+        -- IsReported shows which rows a pharmacy owner has flagged from Customer Reviews.
+        r.Rating, r.Comment, r.ReviewDate, r.OrderId, r.IsHidden, r.IsReported
 FROM    Reviews r
         INNER JOIN Users      u  ON u.UserId     = r.CustomerId
         INNER JOIN Medicines  m  ON m.MedicineId = r.MedicineId
@@ -265,11 +268,14 @@ FROM    Reviews r
         INNER JOIN Pharmacies ph ON ph.PharmacyId = m.PharmacyId
 -- Low ratings first as a threshold rather than an exact match: moderation is about
 -- complaints, and passing 2 brings back the 1 and 2 star reviews together.
-WHERE   r.Rating <= @MaxRating
+-- A reported review is always in the queue whatever its rating, because an owner can
+-- report a five star review too and the Super Admin still has to see it.
+WHERE   (r.Rating <= @MaxRating OR r.IsReported = 1)
   -- The optional filter pattern, reversed: 1 means 'show hidden ones too', 0 leaves only
   -- the visible ones. This is how the administrator reviews a decision already taken.
   AND   (@IncludeHidden = 1 OR r.IsHidden = 0)
-ORDER BY r.ReviewDate DESC;";
+-- Reported reviews first, because someone is waiting on a decision about them.
+ORDER BY r.IsReported DESC, r.ReviewDate DESC;";
 
             return _db.ExecuteTable(sql,
                 DbHelper.P("@MaxRating", maxRating),
@@ -288,11 +294,36 @@ ORDER BY r.ReviewDate DESC;";
                 // out of step. No PharmacyId in the WHERE, unlike every owner method in
                 // this file - moderation is a Super Admin power and is deliberately not
                 // scoped to a shop; the caller's role is what authorises it.
-                "UPDATE Reviews SET IsHidden = @Hidden WHERE ReviewId = @Id;",
+                // IsReported goes back to 0 either way: hiding or restoring IS the Super
+                // Admin's decision on the report, so the review leaves the reported list.
+                "UPDATE Reviews SET IsHidden = @Hidden, IsReported = 0 WHERE ReviewId = @Id;",
                 DbHelper.P("@Hidden", hidden ? 1 : 0),
                 // The primary key, so this can affect at most one row and == 1 below is
                 // both the write and the proof that the review existed.
                 DbHelper.P("@Id", reviewId)) == 1;
+        }
+
+        /// <summary>
+        /// A pharmacy owner flags a review about their own shop for the Super Admin.
+        /// It only sets IsReported; the review stays visible until the Super Admin
+        /// decides, so an owner can never remove a review themselves.
+        /// </summary>
+        public bool Report(int reviewId, int pharmacyId)
+        {
+            return _db.ExecuteNonQuery(@"
+-- UPDATE ... FROM with a join, because Reviews has no PharmacyId: the medicine is what
+-- ties a review to a shop. The PharmacyId test means an owner can only report reviews
+-- about their own medicines, even if a different ReviewId were somehow passed in.
+UPDATE  r
+SET     r.IsReported = 1
+FROM    Reviews r
+        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId
+WHERE   r.ReviewId   = @Id
+  AND   m.PharmacyId = @PharmacyId
+  -- A hidden review has already been dealt with, so there is nothing left to report.
+  AND   r.IsHidden   = 0;",
+                DbHelper.P("@Id", reviewId),
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
         }
     }
 }

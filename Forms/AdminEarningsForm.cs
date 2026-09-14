@@ -197,7 +197,10 @@ namespace PharmaLinkApp.Forms
                 // UserSession.PharmacyId again, never a control. This is the same report the
                 // Super Admin runs across the platform; the only difference is this one extra
                 // WHERE condition, and it is taken from the login rather than from the screen.
+                // The selected medicine is passed as well, so the tiles describe the same
+                // lines as the grid below; 0 means every medicine.
                 _reports.GetEarningsTotals(UserSession.PharmacyId, dtpFrom.Value, dtpTo.Value,
+                                           SelectedMedicineId(),
                                            out gross, out commission, out net, out units);
 
                 _tileGross.Text = UiTheme.Money(gross);
