@@ -7,9 +7,22 @@ namespace PharmaLinkApp.Models
     /// </summary>
     public class Category
     {
+        // The primary key. Medicines.CategoryId is a foreign key onto this column, which
+        // is why a category that is in use cannot simply be deleted.
         public int CategoryId { get; set; }
+
+        // The name shown in every dropdown and grid. UQ_Categories_Name makes it unique,
+        // so the list cannot end up with two entries called Antibiotic.
         public string CategoryName { get; set; } = "";
+
+        // A short note for the Super Admin's own reference. Nullable in the database,
+        // which is why the property is initialised to an empty string rather than left
+        // null: every screen can then print it without a null check.
         public string Description { get; set; } = "";
+
+        // The soft delete flag. Retiring a category sets this to false and keeps the row,
+        // so historic medicines still resolve their category name. Default true, matching
+        // DF_Categories_IsActive, so a newly created category is usable straight away.
         public bool IsActive { get; set; } = true;
 
         /// <summary>ComboBox controls display this.</summary>
