@@ -1420,17 +1420,27 @@ All captures live in [`docs/screenshots/`](docs/screenshots) and are taken again
 
 ## 16. Team Contribution
 
-Contribution is 25% each.
+Contribution is 25% each. The application has **28 forms and 10 services**, divided
+**seven forms each**. The division follows the layers of the application rather than
+cutting across them, so each member owns a set of screens *and* the service that holds
+the SQL behind them. No file appears in two rows.
 
-| Name | ID | Contribution |
-|------|-----|--------------|
-| Nafiul Islam | 21-45717-3 | **Design and documentation:** case study, functional requirements, user stories, README assembly.<br>**Implementation:** login, sign up and role routing (`LoginForm`, `SignUpForm`, `AuthService`, `UserSession`); Pharmacy Owner branch — medicine CRUD (`AdminMedicineForm`, `MedicineEditorForm`, `MedicineService`), stock and inventory with the low-stock alert (`AdminInventoryForm`), earnings and sales report (`AdminEarningsForm`, `ReportService`), discount offers (`DiscountOffersForm`, `OfferService`) |
-| Md Arafat Rahman | 22-47910-2 |PharmaLinkDB_Setup.sql, DbHelper, ReportService, SuperAdminSalesReportForm, AdminEarningsForm, SuperAdminLowRatedShopsForm. Core questions: the ten tables and their relationships, normalisation to 3NF, WHERE versus HAVING, the CAST inside AVG.
-| Muhtasim Mahin | 23-53789-3 |MedicineService, AdminMedicineForm, MedicineEditorForm, AdminInventoryForm, OfferService, DiscountOffersForm, CategoryService, ManageCategoriesForm, PharmacyService. Core questions: CRUD scoped by PharmacyId, the Stock < MinStock alert.
-| Shohidur Raza Sujon | 22-49449-3 |CustomerHomeForm, CartService, CartForm, CheckoutForm, OrderService, InvoiceForm, OrderHistoryForm, ReviewService, PrescriptionService. Core questions: the five ComboBox filters, the UNIQUE (CustomerId, MedicineId) cart constraint, and the checkout transaction — Serializable isolation, the stock re-check inside the transaction, splitting a two-pharmacy basket into two orders.
+| Name | ID | Screens (7 each) | Service layer |
+|------|-----|------------------|---------------|
+| **Nafiul Islam** | 21-45717-3 | **Identity, access and platform administration** — `LoginForm`, `SignUpForm`, `MyProfileForm`, `PharmacyProfileForm`, `SuperAdminDashboard`, `SuperAdminManageUsersForm`, `SuperAdminManageShopsForm` | `AuthService`, `PharmacyService`, `UserSession`, `PasswordHelper`, `Validator`<br>**Database:** `Users` and `Pharmacies`; the UNIQUE `OwnerId` that makes the 1:1; salted SHA-256 storage; the approve and suspend transactions |
+| **Muhtasim Mahin** | 23-53789-3 | **Catalogue, stock and offers** — `AdminDashboard`, `AdminMedicineForm`, `MedicineEditorForm`, `AdminInventoryForm`, `ManageCategoriesForm`, `DiscountOffersForm`, `CustomerOffersForm` | `MedicineService`, `CategoryService`, `OfferService`<br>**Database:** `Medicines`, `Categories`, `Offers`; the CHECK constraints; the composite UNIQUE per shop; soft delete and the foreign keys that force it |
+| **Shohidur Raza Sujon** | 22-49449-3 | **Browsing, basket and checkout** — `CustomerHomeForm`, `MedicineDetailsForm`, `CartForm`, `CheckoutForm`, `UploadPrescriptionForm`, `VerifyPrescriptionForm`, `InvoiceForm` | `CartService`, `PrescriptionService`, `OrderService.Checkout`<br>**Database:** `Cart`, `Orders`, `OrderItems`, `Prescriptions`; the junction table; `MERGE`; `COMPUTED PERSISTED` columns; Serializable isolation; 3NF on `OrderItems` |
+| **Md Arafat Rahman** | 22-47910-2 | **Orders after payment, reviews and reporting** — `OrderHistoryForm`, `GiveRatingForm`, `AdminReviewsForm`, `ModerateReviewsForm`, `AdminEarningsForm`, `SuperAdminSalesReportForm`, `SuperAdminLowRatedShopsForm` | `ReviewService`, `ReportService`, `OrderService` status methods<br>**Database:** `Reviews`; `GROUP BY` and `HAVING`; `AVG` and the `CAST` inside it; join fan-out and the derived tables that avoid it |
 
-Rows 2 to 4 record design and documentation ownership. Each member adds their own
-implementation scope to their row.
+`OrderService` is the only file two members touch, so it is divided by method rather than
+left ambiguous: **Shohidur owns `Checkout`**, the transaction itself; **Arafat owns the
+status methods** — `Confirm`, `Cancel`, `MarkDelivered`, `GetHistoryForCustomer` and
+`GetOrdersForPharmacy`.
+
+Three components are shared by all four members because every screen depends on them:
+`DbHelper`, which is the only class that opens a connection and the reason every query is
+parameterised; `UserSession`, which carries the logged-in `PharmacyId` that scopes every
+Admin query; and the `Models` folder.
 
 ---
 
