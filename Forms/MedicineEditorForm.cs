@@ -2,405 +2,262 @@ using System.Drawing;               // Color and Font, used only by the theming 
 using System.Windows.Forms;         // Form, Label, Control, MessageBox and DialogResult
 using PharmaLinkApp.Helpers;        // UiTheme paints the errors, Validator owns the rules
 using PharmaLinkApp.Models;         // Medicine, the typed object a row is built into
-using PharmaLinkApp.Services;       // MedicineService and CategoryService, the only classes that reach SQL
+using PharmaLinkApp.Services;       // MedicineService and CategoryService, the only SQL callers
 
-namespace PharmaLinkApp.Forms
+namespace PharmaLinkApp.Forms       // the presentation namespace; nothing here writes SQL
 {
-    // -------------------------------------------------------------------------
-    //  Layer: presentation, modal dialog. Opened by AdminMedicineForm (Add and
-    //  Edit) and by AdminInventoryForm (Restock). Uses MedicineService and
-    //  CategoryService.
-    //
-    //  The constructor takes (medicineId, focusStock). A medicineId of 0 means
-    //  add, any other value means edit, and focusStock is true when the Restock
-    //  button opened the dialog so the cursor lands in the stock box.
-    //
-    //  Load order:
-    //      MedicineEditorForm_Load -> ApplyTheme -> LoadCategories
-    //                              -> LoadExisting (only when editing)
-    //
-    //  LoadCategories binds the ComboBox with DataSource plus DisplayMember
-    //  "CategoryName" and ValueMember "CategoryId", which is why SelectedValue
-    //  hands back the id directly when saving.
-    //
-    //  LoadExisting calls GetForEdit(medicineId, PharmacyId). A null result means
-    //  the row belongs to a different pharmacy: the id on its own is not enough
-    //  to load a record.
-    //  Save builds a Medicine object and calls Insert or Update, passing
-    //  PharmacyId from the session rather than from any control on the form.
-    // -------------------------------------------------------------------------
+    // A modal dialog. medicineId 0 means add, anything else means edit that row.
 
-    /// <summary>
-    /// The Add / Edit Medicine modal dialog (requirement 12).
-    ///
-    /// This is the form the navigation diagram draws with a dashed border. Every
-    /// field is validated as it is typed: a failing rule paints the field red,
-    /// names the CHECK constraint that would reject the value at the database as
-    /// well, and keeps the Save button disabled.
-    /// </summary>
+    /// <summary>The Add / Edit Medicine dialog, validated as it is typed.</summary>
     public partial class MedicineEditorForm : Form
     {
-        // One service instance per dialog. Neither holds a connection of its own:
-        // DbHelper opens and closes one inside every call, so keeping these for the life
-        // of the form costs nothing and there is nothing to dispose when it closes.
-        private readonly MedicineService _medicines = new MedicineService();
-        private readonly CategoryService _categories = new CategoryService();
+        private readonly MedicineService _medicines = new MedicineService();     // DbHelper owns the connection, so nothing to dispose
+        private readonly CategoryService _categories = new CategoryService();    // a second service: categories are another table
 
-        // THE MODE SWITCH. One dialog serves both Add and Edit, and this single field is
-        // how it knows which it is. Zero means add, any other value means edit that row.
-        // It is readonly and set in the constructor, so the mode is fixed the moment the
-        // dialog is created and cannot drift half way through: there is no way for a
-        // form that opened as Add to save as an Update, or the reverse.
-        private readonly int _medicineId;      // 0 means "add a new one"
+        private readonly int _medicineId;      // 0 means "add a new one"; readonly, so the mode cannot drift
         private readonly bool _focusStock;     // opened from the Restock button
 
-        // True while the Load handler is filling the controls. Every field on this form
-        // raises Field_Changed when its value is assigned, and without this guard the
-        // fill would run ValidateAll a dozen times and paint red labels over boxes the
-        // user has not even seen yet. It is cleared once, after the fill, and then a
-        // single deliberate ValidateAll produces the real starting state.
+        // True while Load fills the controls, so the fill does not revalidate each time.
         private bool _loading = true;
 
+        // The only constructor, so the dialog cannot exist without stating its mode.
         public MedicineEditorForm(int medicineId, bool focusStock)
         {
             InitializeComponent();       // builds the controls from the Designer file first
-            // The two arguments are stored and nothing else happens here. Database work is
-            // deliberately left to the Load event: a constructor that throws leaves a
-            // half built form with no window to show the error in.
-            _medicineId = medicineId;
-            _focusStock = focusStock;
+            _medicineId = medicineId;    // stored and nothing else: database work waits for Load
+            _focusStock = focusStock;    // the last chance to assign either field, since both are readonly
         }
 
-        private void MedicineEditorForm_Load(object sender, EventArgs e)
+        private void MedicineEditorForm_Load(object sender, EventArgs e)   // the window exists, so errors have somewhere to show
         {
             ApplyTheme();       // colours and fonts only, no data
-            // Categories must be bound BEFORE LoadExisting runs, because setting
-            // cmbCategory.SelectedValue only works once the list it has to search is there.
-            LoadCategories();
+            LoadCategories();   // must run before LoadExisting, or SelectedValue finds no list to search
 
-            // The mode decides what the dialog opens with. Edit pulls the stored row;
-            // Add fills in sensible starting values instead, so the owner is not forced to
-            // type numbers that are almost always the same.
-            if (_medicineId > 0) LoadExisting();
-            else
+            if (_medicineId > 0) LoadExisting();   // Edit pulls the stored row
+            else   // the Add branch: no row to read, so these defaults stand in for one
             {
                 lblTitle.Text = "Add Medicine";                 // the heading is the visible half of the mode
-                dtpExpiry.Value = DateTime.Today.AddYears(2);   // a typical shelf life, and safely in the future
+                dtpExpiry.Value = DateTime.Today.AddYears(2);   // a typical shelf life, safely in the future
                 txtStock.Text = "0";                            // a new line starts empty and is restocked after
                 txtMinStock.Text = "10";                        // matches DF_Medicines_MinStock, the column default
             }
 
-            // The fill is over, so changes from here on are the user's and must revalidate.
-            _loading = false;
+            _loading = false;   // the fill is over, so changes from here are the user's
 
-            // Run the rules once now. This is what leaves Save disabled on a blank Add
-            // form, rather than enabled until the first keystroke proves otherwise.
-            ValidateAll();
+            ValidateAll();   // run once, so Save opens disabled on a blank Add form
 
-            if (_focusStock)
+            if (_focusStock)   // set only when AdminInventoryForm's Restock button opened this
             {
-                // Opened from Restock, so the one field the owner came to change gets the
-                // cursor. SelectAll as well, so typing replaces the current number instead
-                // of appending to it and turning 5 into 53.
-                txtStock.Focus();
-                txtStock.SelectAll();
+                txtStock.Focus();       // the one field the owner came here to change
+                txtStock.SelectAll();   // so typing replaces the number instead of turning 5 into 53
             }
         }
 
-        // Colours and fonts only. Nothing here reads or writes data, so it can be
-        // re-read as pure presentation.
+        // Colours and fonts only, so this method can be read as pure presentation.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Medicine");
-            StartPosition = FormStartPosition.CenterParent;
+            UiTheme.StyleForm(this, "Medicine");                      // shared window chrome, set in one place
+            StartPosition = FormStartPosition.CenterParent;           // a modal dialog belongs over its caller
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;                  // the brand green band on every screen
+            lblTitle.Font = UiTheme.FontTitle;                        // the "Add" or "Edit Medicine" heading
+            lblTitle.ForeColor = Color.White;                         // the only colour with contrast on that band
+            lblSubtitle.Font = UiTheme.FontSmall;                     // a size down, so the two lines pair up
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);    // a pale tint: visible but subordinate
 
-            foreach (Control control in Controls)
+            foreach (Control control in Controls)   // walked, rather than naming all seven error labels
             {
-                if (control is Label label && label.Name.EndsWith("Error"))
+                if (control is Label label && label.Name.EndsWith("Error"))   // the naming convention is the selector
                 {
-                    label.Font = UiTheme.FontSmall;
-                    label.ForeColor = UiTheme.Danger;
+                    label.Font = UiTheme.FontSmall;      // small, so an error never pushes the layout around
+                    label.ForeColor = UiTheme.Danger;    // one red from the palette, used on every screen
                 }
             }
 
-            lblConstraintNote.Font = UiTheme.FontSmall;
-            lblConstraintNote.ForeColor = UiTheme.TextMuted;
+            lblConstraintNote.Font = UiTheme.FontSmall;          // the standing note naming the CHECK constraints
+            lblConstraintNote.ForeColor = UiTheme.TextMuted;     // muted, because it is not itself an error
 
-            UiTheme.StylePrimary(btnSave);
-            btnSave.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            UiTheme.StyleSecondary(btnCancel);
+            UiTheme.StylePrimary(btnSave);                                        // green: the one action that writes
+            btnSave.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);    // after StylePrimary, so Save is heavier
+            UiTheme.StyleSecondary(btnCancel);                                    // grey, because cancelling writes nothing
         }
 
-        private void LoadCategories()
+        private void LoadCategories()   // runs before LoadExisting, and the order is load-bearing
         {
-            // GetActiveList returns only rows with IsActive = 1, so a category the Super
-            // Admin has retired cannot be chosen for a new medicine. Medicines already
-            // pointing at it keep working, because deactivating never deletes the row.
+            // Active rows only, so a retired category cannot be chosen for a new medicine.
             cmbCategory.DataSource = _categories.GetActiveList();
 
-            // DisplayMember is what the user reads, ValueMember is what the code stores.
-            // Binding both is what lets Save read cmbCategory.SelectedValue and get the
-            // CategoryId straight out, with no lookup by name and no string parsing.
-            cmbCategory.DisplayMember = "CategoryName";
-            cmbCategory.ValueMember = "CategoryId";
+            cmbCategory.DisplayMember = "CategoryName";   // what the user reads
+            cmbCategory.ValueMember = "CategoryId";       // what makes SelectedValue an id, not a name
         }
 
-        private void LoadExisting()
+        private void LoadExisting()   // reached only when _medicineId is non-zero: the Edit half
         {
-            // BOTH ids go to the query. The medicine id says which row, and PharmacyId
-            // says it must belong to this shop, so an id typed or guessed from elsewhere
-            // simply matches nothing rather than opening another owner's record.
+            // BOTH ids go to the query, so a guessed id cannot open another shop's record.
             Medicine medicine = _medicines.GetForEdit(_medicineId, UserSession.PharmacyId);
 
-            if (medicine == null)
+            if (medicine == null)   // the service's way of saying no row matched BOTH ids
             {
-                // The WHERE clause carried PharmacyId, so this only happens when
-                // the row belongs to a different pharmacy.
+                // The WHERE carried PharmacyId, so the row belongs to a different pharmacy.
                 MessageBox.Show("That medicine does not belong to your pharmacy.",
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);   // a warning: refusing is correct behaviour
 
-                // Close as Cancel, not OK, so the caller does not refresh its grid and
-                // report a save that never happened.
-                DialogResult = DialogResult.Cancel;
-                Close();
-                return;     // nothing below this point is safe to run with a null row
+                DialogResult = DialogResult.Cancel;   // Cancel, so the caller does not refresh on a save that never happened
+                Close();    // shuts the dialog and hands control back to the form that opened it
+                return;     // nothing below is safe to run with a null row
             }
 
             lblTitle.Text = "Edit Medicine";        // the other half of the mode, now visible
 
-            // Straight copies from the row into the boxes. _loading is still true at this
-            // point, so none of these assignments triggers a validation pass.
+            // Straight copies; _loading is still true, so none of these triggers validation.
             txtName.Text = medicine.MedicineName;
-            txtGeneric.Text = medicine.GenericName;
-            txtManufacturer.Text = medicine.Manufacturer;
-            txtStrength.Text = medicine.Strength;
+            txtGeneric.Text = medicine.GenericName;           // the searchable name customers type
+            txtManufacturer.Text = medicine.Manufacturer;     // free text, copied back exactly as stored
+            txtStrength.Text = medicine.Strength;             // part of UQ_Medicines_PerShop
 
-            // Formatted to two decimals so the box shows 45.00 rather than 45, which is
-            // what the column stores and what the invoice will print.
-            txtUnitPrice.Text = medicine.UnitPrice.ToString("0.00");
-            txtStock.Text = medicine.Stock.ToString();
-            txtMinStock.Text = medicine.MinStock.ToString();
-            chkRequiresRx.Checked = medicine.RequiresRx;
-            txtDescription.Text = medicine.Description;
+            txtUnitPrice.Text = medicine.UnitPrice.ToString("0.00");   // 45.00, which is what the column stores
+            txtStock.Text = medicine.Stock.ToString();           // an int, so no decimals on a unit count
+            txtMinStock.Text = medicine.MinStock.ToString();     // the threshold the low-stock report uses
+            chkRequiresRx.Checked = medicine.RequiresRx;         // a bool straight into the tick box
+            txtDescription.Text = medicine.Description;          // nullable, and the model turned NULL into ""
 
-            // A stored date that has already passed would fail the future date rule the
-            // moment the dialog opened, leaving Save disabled on a row the owner may only
-            // have come to restock. Clamping to tomorrow gives a usable starting point and
-            // still forces a deliberate choice, and nothing is written until Save is pressed.
+            // A stored date already past would fail the future rule and lock Save on open.
             dtpExpiry.Value = medicine.ExpiryDate > DateTime.Today
-                ? medicine.ExpiryDate
-                : DateTime.Today.AddDays(1);
+                ? medicine.ExpiryDate            // still in the future, so show what is stored
+                : DateTime.Today.AddDays(1);     // expired, so clamp to the earliest date allowed
 
-            // Assigned last, and it works because LoadCategories has already bound the list
-            // and named CategoryId as the ValueMember. Setting it before the binding would
-            // silently do nothing and the dialog would open on the wrong category.
+            // Assigned last, because it only works once LoadCategories has bound the list.
             cmbCategory.SelectedValue = medicine.CategoryId;
         }
 
-        // ---------------------------------------------------------------------
-        //  VALIDATION
-        // ---------------------------------------------------------------------
+        // ------------------------------ VALIDATION ---------------------------
 
-        // Every input control on the form is wired to this one handler in the Designer,
-        // so there is a single entry point for "something changed" rather than a dozen
-        // near identical handlers that could drift apart.
+        // Every input control is wired here in the Designer, so there is one entry point.
         private void Field_Changed(object sender, EventArgs e) => ValidateAll();
 
-        private bool ValidateAll()
+        private bool ValidateAll()   // returns the verdict and repaints in the same pass
         {
-            // The Load handler is still filling controls, so there is nothing to judge yet.
-            // Returning false rather than true is the safe direction: a caller that ignored
-            // the guard would be told "not valid" instead of being waved through.
-            if (_loading) return false;
+            if (_loading) return false;   // still filling, and false is the safe direction
 
-            bool ok = true;
+            bool ok = true;   // starts optimistic and is only driven down by the rules below
 
-            // Note &= and not &&. The compound assignment evaluates the right hand side
-            // every time, so EVERY rule runs and every failing field gets its red label on
-            // the same pass. With && the first failure would short circuit the rest and the
-            // user would fix one field only to discover the next, one at a time.
+            // &= not &&, so EVERY rule runs and every failing field is painted on one pass.
             ok &= Check(!Validator.IsBlank(txtName.Text), lblNameError, txtName,
-                        "The brand name cannot be empty.");
+                        "The brand name cannot be empty.");   // IsBlank covers whitespace too
 
             // The UNIQUE constraint is (PharmacyId, MedicineName, Strength).
-            // Guarded by the blank test so an empty box reports "cannot be empty" rather
-            // than running a pointless query for the empty string.
-            if (!Validator.IsBlank(txtName.Text) &&
-                // _medicineId is passed as the id to IGNORE. When editing, the row's own
-                // name and strength must not count as a duplicate of itself, or Save would
-                // be blocked on a record that changed nothing. Adding passes 0, which
-                // matches no row, so every existing name counts.
-                _medicines.NameExistsInPharmacy(UserSession.PharmacyId, txtName.Text, txtStrength.Text, _medicineId))
+            if (!Validator.IsBlank(txtName.Text) &&                                                              // guarded, so an empty box reports blank instead
+                _medicines.NameExistsInPharmacy(UserSession.PharmacyId, txtName.Text, txtStrength.Text, _medicineId))   // _medicineId is the id to IGNORE, so a row is not its own duplicate
             {
-                // Written out rather than routed through Check, because the message has to
-                // quote what the user typed and Check takes a fixed string.
+                // Written out rather than routed through Check, which takes a fixed string.
                 UiTheme.ShowError(lblNameError, txtName,
-                    "You already list " + txtName.Text.Trim() + " " + txtStrength.Text.Trim() +
-                    " (UQ_Medicines_PerShop allows one brand and strength per pharmacy).");
+                    "You already list " + txtName.Text.Trim() + " " + txtStrength.Text.Trim() +   // Trim is cosmetic here, it does not change the test
+                    " (UQ_Medicines_PerShop allows one brand and strength per pharmacy).");       // naming the constraint shows this is a rule
                 ok = false;     // set directly, since this branch bypassed the &= pattern
             }
 
-            ok &= Check(!Validator.IsBlank(txtGeneric.Text), lblGenericError, txtGeneric,
-                        "The generic name is what makes the medicine searchable, so it is required.");
+            ok &= Check(!Validator.IsBlank(txtGeneric.Text), lblGenericError, txtGeneric,                    // required, because search runs on it
+                        "The generic name is what makes the medicine searchable, so it is required.");       // explains the consequence, not the rule
 
-            ok &= Check(!Validator.IsBlank(txtManufacturer.Text), lblManufacturerError, txtManufacturer,
-                        "Enter the manufacturer, for example Beximco, Square or Renata.");
+            ok &= Check(!Validator.IsBlank(txtManufacturer.Text), lblManufacturerError, txtManufacturer,     // no CHECK behind this one; the form is the only gate
+                        "Enter the manufacturer, for example Beximco, Square or Renata.");                   // gives the shape wanted, not just "required"
 
-            // The field argument is null because a DateTimePicker has no white background
-            // to tint red. The message still appears under it, which is the part that
-            // matters. The database has no CHECK for this one, so unlike the three rules
-            // below it is enforced here alone.
-            ok &= Check(Validator.IsFutureDate(dtpExpiry.Value), lblExpiryError, null,
-                        "The expiry date must be in the future - expired stock is never offered to customers.");
+            // field is null because a DateTimePicker has no white background to tint red.
+            ok &= Check(Validator.IsFutureDate(dtpExpiry.Value), lblExpiryError, null,                               // the database has no CHECK for this, so the form alone enforces it
+                        "The expiry date must be in the future - expired stock is never offered to customers.");     // says why, since the rule protects the customer
 
-            // The next three are the deliberately doubled rules. Each one is checked here,
-            // in front of the user, AND again by a CHECK constraint on the Medicines table.
-            // The form check exists so a mistake becomes a red label under the box instead
-            // of an exception; the constraint exists because the form can be bypassed and
-            // the table is the last line that cannot be. The numbers are copied from the
-            // constraints on purpose, so the two can never disagree about what is legal.
-            //
-            // The out values are collected only because TryParse requires somewhere to put
-            // them. They are discarded here and Save parses the same text again, which is
-            // safe precisely because this pass has already proved that it parses.
-            decimal price;
-            ok &= Check(Validator.IsPositiveDecimal(txtUnitPrice.Text, out price), lblUnitPriceError, txtUnitPrice,
-                        "The unit price must be a number greater than zero (CK_Medicines_Price).");
+            // The next three are checked here AND again by a CHECK constraint on the table.
+            decimal price;   // collected only because TryParse needs somewhere to put it
+            ok &= Check(Validator.IsPositiveDecimal(txtUnitPrice.Text, out price), lblUnitPriceError, txtUnitPrice,   // positive, not merely numeric
+                        "The unit price must be a number greater than zero (CK_Medicines_Price).");                   // named, so it matches what the database would say
 
-            int stock;
-            ok &= Check(Validator.IsNonNegativeInt(txtStock.Text, out stock), lblStockError, txtStock,
-                        "Stock must be a whole number of zero or more (CK_Medicines_Stock).");
+            int stock;   // declared per rule, so each one owns its own out variable
+            ok &= Check(Validator.IsNonNegativeInt(txtStock.Text, out stock), lblStockError, txtStock,   // zero IS allowed: a listing can be out of stock
+                        "Stock must be a whole number of zero or more (CK_Medicines_Stock).");           // whole, because half a box cannot be dispensed
 
-            int minStock;
-            ok &= Check(Validator.IsNonNegativeInt(txtMinStock.Text, out minStock), lblMinStockError, txtMinStock,
-                        "Minimum stock must be a whole number of zero or more (CK_Medicines_MinStock).");
+            int minStock;   // the third out variable, discarded like the other two
+            ok &= Check(Validator.IsNonNegativeInt(txtMinStock.Text, out minStock), lblMinStockError, txtMinStock,   // the same rule as Stock, since the two are compared
+                        "Minimum stock must be a whole number of zero or more (CK_Medicines_MinStock).");            // zero means "never warn me about this line"
 
-            // No error label for the category: the list is bound from the database and is
-            // never empty in practice, so the only job here is to keep Save disabled in the
-            // impossible case. CategoryId is a foreign key, so a missing choice would be
-            // refused by FK_Medicines_Category anyway.
+            // No error label: the list comes from the database and is never empty in practice.
             ok &= cmbCategory.SelectedItem != null;
 
-            // Disabling the button is the real enforcement: an invalid form cannot be
-            // submitted at all, rather than being submitted and then rejected.
-            btnSave.Enabled = ok;
+            btnSave.Enabled = ok;   // the real enforcement: an invalid form cannot be submitted
 
-            // Greying the colour as well, because a disabled button that still looks
-            // primary green reads as a broken button rather than a blocked one.
+            // Greyed as well, so a disabled green button does not read as a broken one.
             btnSave.BackColor = ok ? UiTheme.Primary : Color.FromArgb(170, 190, 184);
-            return ok;
+            return ok;   // handed back, so btnSave_Click can re-run the pass before writing
         }
 
-        // One helper for every rule, so showing and clearing an error is written once.
-        // It returns the verdict it was given, which is what lets the caller write
-        // "ok &= Check(...)" and get the painting and the accumulation in one line.
+        // One helper per rule, so "ok &= Check(...)" paints and accumulates in one line.
         private bool Check(bool rulePassed, Label errorLabel, Control field, string message)
         {
-            // Clearing on success matters as much as showing on failure: without it a
-            // message from an earlier keystroke would sit under a field that is now correct.
-            if (rulePassed) UiTheme.ClearError(errorLabel, field);
-            else UiTheme.ShowError(errorLabel, field, message);
-            return rulePassed;
+            if (rulePassed) UiTheme.ClearError(errorLabel, field);   // clearing matters as much as showing
+            else UiTheme.ShowError(errorLabel, field, message);      // tolerates a null field, as the expiry rule needs
+            return rulePassed;   // returned unchanged, so this helper only paints
         }
 
         // ---------------------------------------------------------------------
 
-        private void btnSave_Click(object sender, EventArgs e)
+        private void btnSave_Click(object sender, EventArgs e)   // the only handler here that writes
         {
-            // Revalidated even though the button is only enabled when valid. A keyboard
-            // shortcut or a default button can fire a click the enabled state did not
-            // anticipate, and this line costs nothing next to a bad row.
-            if (!ValidateAll()) return;
+            if (!ValidateAll()) return;   // a shortcut can fire a click the enabled state did not expect
 
-            try
+            try   // the constraints can still refuse a row, so the dialog survives a refusal
             {
-                // One object built from the controls, then handed to the service. The form
-                // never writes SQL itself: it does not know the table name or the column
-                // list, which is what keeps the two layers separable.
+                // One object built from the controls; the form knows no table or column names.
                 Medicine medicine = new Medicine
                 {
-                    // On Add this is 0 and Insert ignores it, because MedicineId is an
-                    // IDENTITY column the database assigns. On Edit it is the real id and
-                    // becomes the WHERE clause of the UPDATE.
+                    // 0 on Add, which Insert ignores because MedicineId is an IDENTITY column.
                     MedicineId = _medicineId,
 
-                    // SelectedValue is the CategoryId because ValueMember was bound to it.
-                    // Convert.ToInt32 rather than a cast, since the bound value arrives
-                    // boxed as an object.
+                    // SelectedValue is the CategoryId, and it arrives boxed, so Convert not a cast.
                     CategoryId = Convert.ToInt32(cmbCategory.SelectedValue),
 
-                    // The text goes across untrimmed: the service trims each value before
-                    // it reaches the parameter, so the trimming rule lives in one place
-                    // rather than being repeated on every form that writes a medicine.
+                    // Untrimmed on purpose: the service trims, so the rule lives in one place.
                     MedicineName = txtName.Text,
-                    GenericName = txtGeneric.Text,
-                    Manufacturer = txtManufacturer.Text,
-                    Strength = txtStrength.Text,
+                    GenericName = txtGeneric.Text,           // untrimmed for the same reason
+                    Manufacturer = txtManufacturer.Text,     // likewise, so the service is the only trimmer
+                    Strength = txtStrength.Text,             // part of the UNIQUE key, so its trim decides duplicates
 
-                    // Parse, not TryParse, and deliberately so: ValidateAll has already
-                    // proved all three of these parse, so a throw here would mean the
-                    // validation and the save had drifted apart, which is worth knowing
-                    // about rather than swallowing.
+                    // Parse, not TryParse: ValidateAll has already proved all three parse.
                     UnitPrice = decimal.Parse(txtUnitPrice.Text),
-                    Stock = int.Parse(txtStock.Text),
-                    MinStock = int.Parse(txtMinStock.Text),
+                    Stock = int.Parse(txtStock.Text),         // int, because the column counts whole units
+                    MinStock = int.Parse(txtMinStock.Text),   // the third value already proved to parse
 
                     RequiresRx = chkRequiresRx.Checked,     // drives the prescription prompt at checkout
 
-                    // .Date strips the time part the picker carries, because ExpiryDate is
-                    // a DATE column and a time of day would be thrown away by SQL Server
-                    // anyway. Dropping it here keeps the value the same on both sides.
+                    // .Date strips the picker's time, which a DATE column would drop anyway.
                     ExpiryDate = dtpExpiry.Value.Date,
 
-                    Description = txtDescription.Text
+                    Description = txtDescription.Text   // optional; an empty box becomes "", not NULL
                 };
 
-                // THE MODE DECIDES THE STATEMENT. This is the whole difference between the
-                // two jobs the dialog does: everything above was identical, and only these
-                // two branches differ. The test is on the id the constructor was given, not
-                // on anything the user could have altered while the dialog was open.
+                // The mode decides the statement, and it is read from the constructor's id.
                 if (_medicineId == 0)
                 {
-                    // PharmacyId comes from the session, never from the form, so
-                    // an owner cannot create a medicine under someone else's shop.
-                    _medicines.Insert(medicine, UserSession.PharmacyId);
+                    _medicines.Insert(medicine, UserSession.PharmacyId);   // PharmacyId from the session, never the form
                 }
-                else
+                else   // non-zero, so the constructor was handed a real row and this is an edit
                 {
-                    // Update carries the same PharmacyId into its WHERE clause, so editing
-                    // works only on rows this shop owns. An id belonging to another
-                    // pharmacy matches nothing and changes nothing.
-                    _medicines.Update(medicine, UserSession.PharmacyId);
+                    _medicines.Update(medicine, UserSession.PharmacyId);   // the same id goes into the WHERE clause
                 }
 
-                // OK is what tells the calling form the grid is now out of date and should
-                // be reloaded. Setting it also closes a modal dialog, but Close is called
-                // explicitly so the intent is readable rather than a side effect.
-                DialogResult = DialogResult.OK;
-                Close();
+                DialogResult = DialogResult.OK;   // tells the calling form its grid is out of date
+                Close();   // explicit, so the reader need not know DialogResult closes a modal
             }
-            catch (Exception ex)
+            catch (Exception ex)   // ex is shown, so the database's own message reaches the owner
             {
-                // The catch is here because the CHECK and UNIQUE constraints are the real
-                // guarantee and can still refuse a row this form thought was fine. Showing
-                // the message keeps the dialog open with the typed values intact, so the
-                // owner can correct one field rather than start again.
+                // The dialog stays open with the typed values, so one field can be corrected.
                 MessageBox.Show("The medicine could not be saved.\r\n\r\n" + ex.Message,
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);   // an error icon: this time something failed
             }
         }
 
-        private void btnCancel_Click(object sender, EventArgs e)
+        private void btnCancel_Click(object sender, EventArgs e)   // the no-op exit, separate from Save
         {
-            // Cancel writes nothing and says so, so the caller leaves its grid alone.
-            DialogResult = DialogResult.Cancel;
-            Close();
+            DialogResult = DialogResult.Cancel;   // writes nothing and says so, so the caller leaves its grid alone
+            Close();   // the same explicit close as the success path, so both exits read alike
         }
     }
 }

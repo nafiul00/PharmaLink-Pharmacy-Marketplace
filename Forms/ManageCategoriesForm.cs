@@ -1,417 +1,337 @@
-using System.Data;                  // DataTable and DataGridViewRow, the shape a read returns
-using System.Drawing;               // Color and Font, used by the theming and the row colouring
-using System.Windows.Forms;         // Form, Control, DataGridView, MessageBox and DialogResult
-using PharmaLinkApp.Helpers;        // UiTheme paints the errors, Validator owns the blank test
-using PharmaLinkApp.Services;       // CategoryService, the only class here that reaches SQL
+using System.Data;                  // DataTable, the shape a read returns
+using System.Drawing;               // Color and Font, used by the theming
+using System.Windows.Forms;         // Form, DataGridView, MessageBox, DialogResult
+using PharmaLinkApp.Helpers;        // UiTheme paints the errors, Validator tests blanks
+using PharmaLinkApp.Services;       // CategoryService, the only class here that hits SQL
 
+// Every screen lives in this one namespace, so any dashboard can open any form.
 namespace PharmaLinkApp.Forms
 {
-    /// <summary>
-    /// Requirement 7. The master category list, with Add, Save, Deactivate and
-    /// Reactivate.
-    ///
-    /// A category that a medicine already references is never deleted, only
-    /// deactivated, which is what keeps every foreign key from Medicines valid.
-    /// </summary>
+    /// <summary>Requirement 7. Category list with soft delete.</summary>
     public partial class ManageCategoriesForm : Form
     {
-        // One service for the life of the form. It holds no connection of its own:
-        // DbHelper opens and closes one inside every call.
+        // One service for the life of the form; DbHelper opens a connection per call.
         private readonly CategoryService _categories = new CategoryService();
 
-        // Which row the grid is sitting on, or 0 when nothing is selected. This single
-        // field decides three separate things: whether Save and the two status buttons
-        // are available, which id they act on, and which id the duplicate name check is
-        // told to IGNORE. That last use is the reason it is an id and not just a flag.
+        // Selected row id, 0 in add mode, and the id the duplicate check must ignore.
         private int _selectedId;
 
+        // Kept empty on purpose - a throw here leaves no window to show the error in.
         public ManageCategoriesForm()
         {
             InitializeComponent();      // build the controls from the Designer file first
-            // Nothing else here. Database work waits for the Load event, because a
-            // constructor that throws leaves no window in which to show the error.
         }
 
+        // Load fires after the handle exists, so every query is reached from here.
         private void ManageCategoriesForm_Load(object sender, EventArgs e)
         {
             ApplyTheme();       // colours and fonts only, no data
-            LoadGrid();         // the first and only read needed to populate the screen
+            LoadGrid();         // the one read that populates the screen
         }
 
-        // Colours, fonts and the grid styling. Nothing here reads or writes data.
+        // Colours, fonts and grid styling. Nothing here reads or writes data.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Medicine Categories");
+            UiTheme.StyleForm(this, "Medicine Categories");   // title and background
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;          // the green band on top
+            lblTitle.Font = UiTheme.FontTitle;                // the largest theme font
+            lblTitle.ForeColor = Color.White;                 // white on the dark band
+            lblSubtitle.Font = UiTheme.FontSmall;             // smaller, so the two pair up
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);   // pale tint of Primary
 
-            grpEditor.Font = UiTheme.FontHeading;
-            grpEditor.ForeColor = UiTheme.Primary;
-            grpEditor.BackColor = UiTheme.CardBack;
+            grpEditor.Font = UiTheme.FontHeading;             // styles the caption only
+            grpEditor.ForeColor = UiTheme.Primary;            // tints the caption of the editor
+            grpEditor.BackColor = UiTheme.CardBack;           // off white card behind it
+            // Looped so a control added to the editor later is themed without an edit here.
             foreach (Control child in grpEditor.Controls)
             {
-                child.Font = UiTheme.FontBody;
-                child.ForeColor = UiTheme.TextDark;
+                child.Font = UiTheme.FontBody;                // the ordinary reading font
+                child.ForeColor = UiTheme.TextDark;           // near black, not harsh black
             }
 
-            lblNameError.Font = UiTheme.FontSmall;
-            lblNameError.ForeColor = UiTheme.Danger;
-            lblEditorNote.Font = UiTheme.FontSmall;
-            lblEditorNote.ForeColor = UiTheme.TextMuted;
-            lblStatus.Font = UiTheme.FontSmall;
-            lblStatus.ForeColor = UiTheme.TextMuted;
+            lblNameError.Font = UiTheme.FontSmall;            // quieter than the field above
+            lblNameError.ForeColor = UiTheme.Danger;          // red is kept for blockers
+            lblEditorNote.Font = UiTheme.FontSmall;           // hint text, same size as above
+            lblEditorNote.ForeColor = UiTheme.TextMuted;      // grey, never competes with red
+            lblStatus.Font = UiTheme.FontSmall;               // the outcome line at the foot
+            lblStatus.ForeColor = UiTheme.TextMuted;          // muted, it only reports
 
-            UiTheme.StyleSecondary(btnBack);
-            UiTheme.StyleSuccess(btnAdd);
-            UiTheme.StylePrimary(btnUpdate);
-            UiTheme.StyleDanger(btnDeactivate);
-            UiTheme.StyleAccent(btnActivate);
-            UiTheme.StyleSecondary(btnNew);
-            UiTheme.StyleGrid(dgvCategories);
-            dgvCategories.CellFormatting += dgvCategories_CellFormatting;
+            UiTheme.StyleSecondary(btnBack);                  // grey: changes nothing
+            UiTheme.StyleSuccess(btnAdd);                     // green: creates a row
+            UiTheme.StylePrimary(btnUpdate);                  // brand colour: amends a row
+            UiTheme.StyleDanger(btnDeactivate);               // red, though it deletes nothing
+            UiTheme.StyleAccent(btnActivate);                 // accent: the red button's twin
+            UiTheme.StyleSecondary(btnNew);                   // grey: it only clears the editor
+            UiTheme.StyleGrid(dgvCategories);                 // one grid style for the app
+            dgvCategories.CellFormatting += dgvCategories_CellFormatting;   // wired here, not in the Designer
         }
 
+        // The single read path; every action re-runs it instead of patching the grid.
         private void LoadGrid()
         {
+            // Wrapped here because this is where the connection is actually used.
             try
             {
-                // The checkbox is inverted on purpose: "show inactive" ticked means
-                // activeOnly false, which is the parameter the query understands. Doing the
-                // inversion here keeps the service reading as a plain data method rather
-                // than one that has to know what a checkbox on a form means.
+                // Inverted on purpose: "show inactive" ticked means activeOnly false.
                 DataTable table = _categories.GetTable(!chkShowInactive.Checked);
 
-                // Bound straight to the grid, so the columns are whatever the SELECT list
-                // was. That is why the headers below are renamed rather than declared.
+                // Bound straight to the grid, so the columns are the SELECT list.
                 dgvCategories.DataSource = table;
 
-                // Guarded because a failed bind would leave no columns and every line below
-                // would throw on a missing column name.
+                // Guarded: a failed bind leaves no columns and every lookup below throws.
                 if (dgvCategories.Columns.Count > 0)
                 {
-                    // Header text only. FillWeight is a proportion rather than a pixel
-                    // width, so the columns keep their relative sizes when the window
-                    // is resized: Description gets the most room because it is the longest.
+                    // FillWeight is a proportion, so relative widths survive a resize.
                     dgvCategories.Columns["CategoryId"].HeaderText = "ID";
-                    dgvCategories.Columns["CategoryId"].FillWeight = 25;
-                    dgvCategories.Columns["CategoryName"].HeaderText = "Category";
-                    dgvCategories.Columns["CategoryName"].FillWeight = 70;
-                    dgvCategories.Columns["Description"].HeaderText = "Description";
-                    dgvCategories.Columns["Description"].FillWeight = 130;
-                    dgvCategories.Columns["IsActive"].HeaderText = "Active";
-                    dgvCategories.Columns["IsActive"].FillWeight = 35;
+                    dgvCategories.Columns["CategoryId"].FillWeight = 25;        // an id is a few digits
+                    dgvCategories.Columns["CategoryName"].HeaderText = "Category";       // the raw name reads as one word
+                    dgvCategories.Columns["CategoryName"].FillWeight = 70;      // a name is a few words
+                    dgvCategories.Columns["Description"].HeaderText = "Description";     // renamed anyway, all headers in one place
+                    dgvCategories.Columns["Description"].FillWeight = 130;      // the only free text column
+                    dgvCategories.Columns["IsActive"].HeaderText = "Active";    // the flag the soft delete rests on
+                    dgvCategories.Columns["IsActive"].FillWeight = 35;          // a checkbox and its heading
 
-                    // MedicineCount is a correlated subquery in the SELECT, not a number
-                    // counted in C#. It is what makes the deactivate decision informed: a
-                    // category with medicines behind it is one that must never be deleted.
+                    // A correlated subquery in the SELECT, not a count done in C#.
                     dgvCategories.Columns["MedicineCount"].HeaderText = "Medicines";
-                    dgvCategories.Columns["MedicineCount"].FillWeight = 45;
+                    dgvCategories.Columns["MedicineCount"].FillWeight = 45;     // a count needs little room
                 }
 
-                // The singular is handled rather than printing "1 categories", which reads
-                // as a bug in an otherwise finished screen.
+                // The singular is handled, or a finished screen prints "1 categories".
                 lblStatus.Text = table.Rows.Count + " categor" + (table.Rows.Count == 1 ? "y" : "ies") + " listed.";
 
-                // The grid has just been rebound, so the row-dependent buttons have to be
-                // re-decided against whatever is selected now.
+                // The grid was just rebound, so the row buttons must be decided again.
                 UpdateButtons();
             }
+            // ex carries the sentence DbHelper already made readable.
             catch (Exception ex)
             {
-                // A read failure is reported and the form stays open with what it had.
-                // Letting it escape would close the screen on a transient connection fault.
+                // Reported, not rethrown: a transient fault must not close the screen.
                 MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
+        // Runs per cell while painting, so it stays cheap: no query, no allocation.
         private void dgvCategories_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
-            // Fires for the header row, where RowIndex is negative, and can fire mid-rebind
-            // when there are no columns. Both would throw on the cell lookup below.
+            // The header row has a negative index, and a rebind can leave no columns.
             if (e.RowIndex < 0 || dgvCategories.Columns.Count == 0) return;
 
-            DataGridViewRow row = dgvCategories.Rows[e.RowIndex];
-            object value = row.Cells["IsActive"].Value;
+            DataGridViewRow row = dgvCategories.Rows[e.RowIndex];      // reached by index, not CurrentRow
+            object value = row.Cells["IsActive"].Value;                // object, because it can be DBNull
 
-            // Two different empties: null is the grid's blank new-row placeholder, DBNull is
-            // a database null. Neither can be handed to Convert.ToBoolean as a real value.
+            // Two empties: null is the grid's new-row placeholder, DBNull is a database null.
             if (value == null || value == DBNull.Value) return;
 
-            bool active = Convert.ToBoolean(value);
+            bool active = Convert.ToBoolean(value);   // Convert, not a cast: BIT boxes oddly
 
-            // A deactivated category is greyed rather than hidden, because it is still a
-            // real row that medicines point at. Colouring it says "retired, not gone",
-            // which is exactly what IsActive = 0 means here.
+            // Greyed rather than hidden: the row still exists and medicines point at it.
             row.DefaultCellStyle.ForeColor = active ? UiTheme.TextDark : UiTheme.TextMuted;
-            row.DefaultCellStyle.BackColor = active ? Color.White : Color.FromArgb(240, 240, 240);
+            row.DefaultCellStyle.BackColor = active ? Color.White : Color.FromArgb(240, 240, 240);   // the white branch resets reused rows
         }
 
+        // Copies the selected row in, the only place _selectedId gets a real id.
         private void dgvCategories_SelectionChanged(object sender, EventArgs e)
         {
-            DataGridViewRow row = dgvCategories.CurrentRow;
+            DataGridViewRow row = dgvCategories.CurrentRow;   // null between a rebind and a pick
 
-            // No row, or the blank new-row placeholder. Returning leaves both _selectedId
-            // and the editor exactly as they were, so a stray click cannot silently wipe
-            // text the user is part way through typing.
+            // No row, or the blank placeholder: leave the editor and the id untouched.
             if (row == null || row.Cells["CategoryId"].Value == null) return;
 
-            // Remembering the id is what switches the editor from add mode to edit mode:
-            // Save, Deactivate and Reactivate all act on this value, and the duplicate name
-            // check uses it as the row to ignore.
+            // Remembering the id is what switches the editor from add mode to edit mode.
             _selectedId = Convert.ToInt32(row.Cells["CategoryId"].Value);
 
-            // Copy the row into the editor so the name is amended rather than retyped.
+            // Copy the row in so the name is amended rather than retyped.
             txtName.Text = row.Cells["CategoryName"].Value.ToString();
 
-            // Description is a nullable column, so the DBNull has to be turned into an
-            // empty string. Calling ToString on DBNull would put the literal text
-            // "System.DBNull" into the box.
+            // Description is nullable, and ToString on DBNull prints "System.DBNull".
             txtDescription.Text = row.Cells["Description"].Value == DBNull.Value
-                ? "" : row.Cells["Description"].Value.ToString();
+                ? "" : row.Cells["Description"].Value.ToString();   // the ternary is the null check
 
-            // Assigning txtName above raises TextChanged, which already ran the duplicate
-            // check and called UpdateButtons. This second call is what settles the two
-            // status buttons against the row just selected, which TextChanged knows nothing
-            // about.
+            // Assigning txtName already fired TextChanged; this settles the status buttons.
             UpdateButtons();
         }
 
+        // The one place every button's enabled state is decided, from all three callers.
         private void UpdateButtons()
         {
-            bool hasSelection = _selectedId > 0;
-            bool nameOk = !Validator.IsBlank(txtName.Text);
+            bool hasSelection = _selectedId > 0;                 // 0 is the add-mode sentinel
+            bool nameOk = !Validator.IsBlank(txtName.Text);      // IsBlank also rejects spaces
 
-            // Add needs only a name, because it creates a row from nothing. Save needs a
-            // name AND a selected row, because it amends one that already exists. Disabling
-            // rather than checking on click is what stops an empty name being attempted at
-            // all, which is the friendlier half of the same rule the database enforces.
+            // Add needs a name; Save needs a name and a row, since it amends an existing one.
             btnAdd.Enabled = nameOk;
-            btnUpdate.Enabled = hasSelection && nameOk;
+            btnUpdate.Enabled = hasSelection && nameOk;          // Save has nothing to write to
 
-            // The status buttons read IsActive from the selected row rather than from a
-            // field, so they always reflect what the database last said rather than what
-            // this form remembers. The DBNull test guards Convert.ToBoolean.
+            // Read from the selected row, not a field, so this matches the database.
             if (hasSelection && dgvCategories.CurrentRow != null &&
-                dgvCategories.CurrentRow.Cells["IsActive"].Value != DBNull.Value)
+                dgvCategories.CurrentRow.Cells["IsActive"].Value != DBNull.Value)   // && proves CurrentRow first
             {
-                bool active = Convert.ToBoolean(dgvCategories.CurrentRow.Cells["IsActive"].Value);
+                bool active = Convert.ToBoolean(dgvCategories.CurrentRow.Cells["IsActive"].Value);   // read fresh, never cached
 
-                // Exactly one of the two is ever available, so the Super Admin cannot
-                // deactivate something already deactivated and wonder why nothing changed.
+                // Exactly one of the pair is ever available, so no action is a no-op.
                 btnDeactivate.Enabled = active;
-                btnActivate.Enabled = !active;
+                btnActivate.Enabled = !active;    // the exact inverse of the line above
             }
+            // No row, or a flag that could not be read: both buttons go off together.
             else
             {
                 // Nothing selected, so neither button has a row to act on.
                 btnDeactivate.Enabled = false;
-                btnActivate.Enabled = false;
+                btnActivate.Enabled = false;      // set explicitly, or the last state persists
             }
         }
 
-        // ---------------------------------------------------------------------
-        //  VALIDATION
-        //  The name is checked for emptiness and for the UNIQUE constraint before
-        //  anything is sent, so a duplicate produces a red label rather than an
-        //  unhandled SQL exception.
-        // ---------------------------------------------------------------------
+        // Validation: a live hint while typing, and a hard gate in front of every write.
 
+        // Live feedback only. It refuses nothing; NameIsUsable below is the real gate.
         private void txtName_TextChanged(object sender, EventArgs e)
         {
-            // An empty box clears the error rather than showing one. Nagging about a field
-            // the user has only just started typing into reads as broken; the real "cannot
-            // be empty" message is raised by NameIsUsable at the moment Add or Save is
-            // pressed, which is when emptiness actually matters.
+            // An empty box clears the error: nagging a half typed field reads as broken.
             if (Validator.IsBlank(txtName.Text))
             {
-                UiTheme.ClearError(lblNameError, txtName);
+                UiTheme.ClearError(lblNameError, txtName);   // blanks the label, resets the box
             }
-            // Checked on every keystroke, so a clash is shown while typing rather than
-            // on save. _selectedId is passed as the id to IGNORE: when EDITING a
-            // category, its own name must not count as a duplicate of itself. Adding a
-            // new one passes 0, which matches no row, so every existing name counts.
-            //
-            // The message names UQ_Categories_Name deliberately - this check is a
-            // courtesy and the UNIQUE constraint is what actually guarantees it.
+            // _selectedId is the id to IGNORE, so editing is not blocked by its own name.
             else if (_categories.NameExists(txtName.Text, _selectedId))
             {
-                // Written out rather than routed through a helper, because the message has
-                // to quote what the user typed.
+                // Written inline because the message has to quote what the user typed.
                 UiTheme.ShowError(lblNameError, txtName,
-                    "A category called '" + txtName.Text.Trim() + "' already exists (UQ_Categories_Name).");
+                    "A category called '" + txtName.Text.Trim() + "' already exists (UQ_Categories_Name).");   // Trim matches what is sent
             }
+            // Neither blank nor taken, the only state Add and Save will accept.
             else
             {
-                // A name that is neither blank nor taken. Clearing matters as much as
-                // showing, or a warning from an earlier keystroke would sit under a box
-                // that is now perfectly valid.
+                // Clearing matters as much as showing, or a stale warning would sit there.
                 UiTheme.ClearError(lblNameError, txtName);
             }
 
-            // The buttons follow the name, so they are re-decided on every keystroke rather
-            // than only when the grid selection changes.
+            // The buttons follow the name, so they are re-decided on every keystroke.
             UpdateButtons();
         }
 
+        // Returns a verdict, and is the last thing between the user and a write.
         private bool NameIsUsable(int ignoreId)
         {
-            // Deliberately a separate method from the keystroke handler, and deliberately
-            // returning a verdict. The handler exists to give live feedback; this one is the
-            // gate in front of a write, and it is the one that refuses to proceed. Both
-            // rules are re-run here rather than trusting the last keystroke's result,
-            // because the grid selection could have changed what "duplicate" means since.
+            // Both rules are re-run here: the selection may have changed since typing.
             if (Validator.IsBlank(txtName.Text))
             {
-                UiTheme.ShowError(lblNameError, txtName, "The category name cannot be empty.");
-                return false;
+                UiTheme.ShowError(lblNameError, txtName, "The category name cannot be empty.");   // suppressed until now
+                return false;   // stops the caller before a parameter is built
             }
 
-            // The ignoreId is passed by the CALLER rather than read from _selectedId, which
-            // is what lets Add pass 0 and Save pass the selected id from the same method.
-            // The alternative, two near identical methods, would be two places for the rule
-            // to drift.
+            // ignoreId comes from the CALLER, so Add passes 0 and Save passes its row id.
             if (_categories.NameExists(txtName.Text, ignoreId))
             {
-                UiTheme.ShowError(lblNameError, txtName,
-                    "A category called '" + txtName.Text.Trim() + "' already exists (UQ_Categories_Name).");
-                return false;
+                UiTheme.ShowError(lblNameError, txtName,                                                       // same wording as the live check
+                    "A category called '" + txtName.Text.Trim() + "' already exists (UQ_Categories_Name).");   // names where the rule really lives
+                return false;   // refused here, so the UNIQUE violation is never caught
             }
 
-            UiTheme.ClearError(lblNameError, txtName);
-            return true;
+            UiTheme.ClearError(lblNameError, txtName);   // clears what an earlier attempt left
+            return true;                                 // the only path that allows a write
         }
 
         // ---------------------------------------------------------------------
 
+        // Creates a category. The only handler that passes 0 as the id to ignore.
         private void btnAdd_Click(object sender, EventArgs e)
         {
-            // 0 as the id to ignore, because a brand new category has no row of its own to
-            // excuse: every existing name is a genuine clash.
+            // 0, because a new category has no row of its own to excuse.
             if (!NameIsUsable(0)) return;
 
-            // The text goes across untrimmed. The service trims before it reaches the
-            // parameter, so the trimming rule lives in one place rather than on every form.
+            // Untrimmed: the service trims once, so the rule lives in a single place.
             _categories.Add(txtName.Text, txtDescription.Text);
-            lblStatus.Text = "Category '" + txtName.Text.Trim() + "' added.";
+            lblStatus.Text = "Category '" + txtName.Text.Trim() + "' added.";   // Trim for display only
 
-            // Cleared so the editor is ready for the next one rather than leaving a filled
-            // form that invites pressing Add twice and meeting the UNIQUE constraint.
+            // Cleared, so pressing Add twice cannot meet the UNIQUE constraint.
             ClearEditor();
             LoadGrid();     // re-read, so the grid shows what the database now holds
         }
 
+        // Amends the selected category. Add's mirror, except for which id it excuses.
         private void btnUpdate_Click(object sender, EventArgs e)
         {
-            // Nothing selected means there is no row to amend. Checked even though the
-            // button is disabled in that state, because a keyboard shortcut can raise a
-            // click the enabled state did not anticipate.
+            // Checked even though the button is disabled: a shortcut can still click it.
             if (_selectedId == 0) return;
 
-            // _selectedId as the id to IGNORE, so saving a category without renaming it is
-            // not blocked by its own name. Passing 0 here would make every edit impossible.
+            // _selectedId as the id to IGNORE, or no edit could ever save unchanged.
             if (!NameIsUsable(_selectedId)) return;
 
-            _categories.Update(_selectedId, txtName.Text, txtDescription.Text);
+            _categories.Update(_selectedId, txtName.Text, txtDescription.Text);   // id picks the row
 
-            // The message says what an owner would otherwise have to guess: medicines store
-            // a CategoryId, not a category name, so a rename reaches every one of them at
-            // once with no second update anywhere.
+            // Medicines store a CategoryId, so one rename reaches all of them at once.
             lblStatus.Text = "Category saved. Every medicine pointing at it now shows the new name.";
 
-            // Not cleared, unlike Add: the row stays selected so the result of the edit can
-            // be seen in the grid next to the editor that produced it.
+            // Not cleared, unlike Add: the row stays selected so the edit can be seen.
             LoadGrid();
         }
 
+        // The soft delete. It asks first, and the question is built from a live query.
         private void btnDeactivate_Click(object sender, EventArgs e)
         {
-            if (_selectedId == 0) return;
+            if (_selectedId == 0) return;   // the disabled button is a courtesy, this is the guarantee
 
-            // Asked BEFORE the confirmation is shown, so the message can tell the truth
-            // about this particular category rather than issuing a generic warning. The
-            // grid's Medicines column shows the same fact, but the dialog is where the
-            // decision is actually being made.
+            // Asked before the dialog, so the warning is true of this category.
             bool referenced = _categories.IsReferenced(_selectedId);
 
-            // Built as a separate string so the confirmation reads naturally when nothing
-            // points at the category, rather than always carrying a clause about medicines
-            // that may not exist.
+            // A separate string, so the question reads naturally when nothing points at it.
             string extra = referenced
-                ? "\r\n\r\nMedicines already point at this category, so it can only be deactivated, never deleted."
-                : "";
+                ? "\r\n\r\nMedicines already point at this category, so it can only be deactivated, never deleted."   // blank lines separate it
+                : "";                                                                                                 // ends where it was
 
-            // Confirmed because this changes what every category dropdown in the
-            // application offers. The wording is careful to say what does NOT happen:
-            // existing medicines keep working, because no row is removed and no foreign key
-            // is broken.
+            // The wording says what does NOT happen: no row is removed, no key breaks.
             DialogResult answer = MessageBox.Show(
-                "Deactivate '" + txtName.Text.Trim() + "'?\r\n\r\n" +
-                "It disappears from every category dropdown but existing medicines keep working." + extra,
-                "Deactivate category", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                "Deactivate '" + txtName.Text.Trim() + "'?\r\n\r\n" +                                           // names the category
+                "It disappears from every category dropdown but existing medicines keep working." + extra,      // the extra clause may be empty
+                "Deactivate category", MessageBoxButtons.YesNo, MessageBoxIcon.Question);                       // YesNo, the caption is a question
 
-            // Anything other than Yes, including closing the box, means do nothing.
+            // Anything but Yes, closing the box included, means do nothing.
             if (answer != DialogResult.Yes) return;
 
-            // A soft delete: an UPDATE setting IsActive to 0, never a DELETE. Medicines hold
-            // a foreign key to Categories and FK_Medicines_Category has no cascade, so a
-            // real delete would either be refused by the database or, with a cascade, would
-            // quietly destroy the medicines pointing at it.
+            // UPDATE IsActive = 0, never a DELETE: FK_Medicines_Category has no cascade.
             _categories.SetActive(_selectedId, false);
 
-            // The status line names the column and states plainly that nothing was removed,
-            // because "deactivated" on its own could still be read as a delete.
+            // Names the column and says plainly that nothing was removed.
             lblStatus.Text = "Category deactivated (IsActive = 0). No row was deleted.";
             LoadGrid();     // re-read so the row greys out and the buttons swap over
         }
 
+        // Putting a category back: one flag flip, so deliberately the shortest handler.
         private void btnActivate_Click(object sender, EventArgs e)
         {
-            if (_selectedId == 0) return;
+            if (_selectedId == 0) return;   // every write path starts from a proven id
 
-            // The exact inverse of Deactivate, calling the same method with true. No
-            // confirmation, because putting a category back is harmless and reversible by
-            // the button next to it. One method for both directions means the statement is
-            // written once rather than twice.
+            // The exact inverse of Deactivate, one method for both directions.
             _categories.SetActive(_selectedId, true);
-            lblStatus.Text = "Category reactivated.";
-            LoadGrid();
+            lblStatus.Text = "Category reactivated.";   // short, nothing was ever destroyed
+            LoadGrid();                                 // the grey lifts, the buttons swap
         }
 
+        // Expression bodied, because New only resets the editor and touches no data.
         private void btnNew_Click(object sender, EventArgs e) => ClearEditor();
 
+        // Returns the form to add mode, so "clean editor" has one definition.
         private void ClearEditor()
         {
-            // Back to add mode. Clearing the id is the important line: while it is set, the
-            // duplicate check would excuse the previously selected row's name and Save would
-            // still be pointed at it.
+            // The important line: while the id is set, Save would still point at that row.
             _selectedId = 0;
 
-            txtName.Clear();
-            txtDescription.Clear();
+            txtName.Clear();          // Clear, not "", so TextChanged fires and buttons follow
+            txtDescription.Clear();   // a stale description must not reach the next Add
 
-            // Cleared explicitly rather than relying on the TextChanged handler, because
-            // clearing the box fires that handler and its blank branch clears the error
-            // anyway. Doing it here as well means the editor is known to be clean whatever
-            // order the events arrive in.
+            // Done here as well as in TextChanged, so the editor is clean in any event order.
             UiTheme.ClearError(lblNameError, txtName);
 
-            // Without this the grid would still be sitting on a row, and the next
-            // SelectionChanged would copy it straight back into the editor just cleared.
+            // Without this the next SelectionChanged copies the old row straight back.
             dgvCategories.ClearSelection();
 
-            UpdateButtons();    // with no name and no selection, every action button goes off
+            UpdateButtons();    // no name and no selection, so every action button goes off
         }
 
-        // The checkbox has no state of its own to keep: LoadGrid reads it directly, so
-        // flipping it simply re-runs the query with the other parameter.
+        // The checkbox keeps no state: LoadGrid reads it, so flipping it re-queries.
         private void chkShowInactive_CheckedChanged(object sender, EventArgs e) => LoadGrid();
 
-        // Close, not Application.Exit: this form was opened from the Super Admin dashboard
-        // and closing it returns there rather than ending the session.
+        // Close, not Application.Exit: this returns to the dashboard that opened it.
         private void btnBack_Click(object sender, EventArgs e) => Close();
     }
 }

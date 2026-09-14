@@ -1,308 +1,225 @@
-using System.Drawing;               // Image, Bitmap and Color, for the preview and the button states
+using System.Drawing;               // Image, Bitmap and Color, for the preview and buttons
 using System.Windows.Forms;         // Form, OpenFileDialog, MessageBox
-using PharmaLinkApp.Helpers;        // UiTheme, including the shared ShowError and ClearError pair
-// FileInfo and FileStream come from System.IO, which is in scope through the project's
-// ImplicitUsings setting rather than a using line of its own.
+using PharmaLinkApp.Helpers;        // UiTheme, including ShowError and ClearError
+// FileInfo and FileStream come from System.IO, in scope through ImplicitUsings.
 
+// This dialog writes nothing: it collects a file, so no service is imported here.
 namespace PharmaLinkApp.Forms
 {
-    /// <summary>
-    /// Requirement 26. The modal that opens at the Confirm Order step when the
-    /// basket contains a medicine whose RequiresRx flag is set.
-    ///
-    /// It accepts only JPG and PNG files under 2 MB, and it cannot be dismissed
-    /// with Attach until a valid image has been chosen. The form only collects
-    /// the file; the row is written into Prescriptions by the checkout, because
-    /// the OrderId does not exist until the order does.
-    /// </summary>
-    public partial class UploadPrescriptionForm : Form
+    /// <summary>Requirement 26. The modal shown when a script is required.</summary>
+    public partial class UploadPrescriptionForm : Form // JPG or PNG, under 2 MB only.
     {
-        // The size ceiling, written as a calculation rather than as 2097152 so the intent
-        // is readable at a glance. const because it is fixed at compile time and there is
-        // no case in which one copy of this dialog should allow a different limit.
-        // long, not int, because FileInfo.Length is a long and comparing the two directly
-        // avoids a conversion that could overflow on a very large file.
+        // Written as a calculation rather than 2097152, and long to match FileInfo.Length.
         private const long MaxBytes = 2 * 1024 * 1024;
 
-        // The shop this prescription is for, used only in the subtitle. readonly, because
-        // the checkout steps through one pharmacy at a time and opens a fresh dialog for
-        // each: the name a customer is shown must stay the one they were asked about.
+        // The shop being asked about, used only in the subtitle; one dialog per pharmacy.
         private readonly string _pharmacyName;
 
-        /// <summary>The chosen file, read by CheckoutForm after the dialog closes with OK.</summary>
-        // The private setter is the point: the outside world can read the path but only
-        // this form can decide what it is, and it only ever sets it after every check
-        // below has passed. Initialised to "" rather than null so the callers can test it
-        // with IsNullOrEmpty without a null check of their own.
-        public string SelectedImagePath { get; private set; } = "";
+        /// <summary>The chosen file, read by CheckoutForm after this closes.</summary>
+        public string SelectedImagePath { get; private set; } = ""; // private set: only checks set it
 
-        // The prescribing doctor, optional. It is only copied out of the text box when
-        // Attach is pressed, so a name typed and then cancelled is never handed back.
+        // The prescribing doctor, optional, and copied out only when Attach is pressed.
         public string DoctorName { get; private set; } = "";
 
+        // Required by the constructor, so the shop asking is always named.
         public UploadPrescriptionForm(string pharmacyName)
         {
-            // Creates the designer's controls. The assignment below must follow it,
-            // because the Load handler puts this value into a label that does not yet exist.
-            InitializeComponent();
-            _pharmacyName = pharmacyName;
+            InitializeComponent();          // must come first: Load writes into these controls
+            _pharmacyName = pharmacyName;   // stored now, displayed in Load once the label exists
         }
 
+        // Fires once the window exists; anything that reads a control belongs here.
         private void UploadPrescriptionForm_Load(object sender, EventArgs e)
         {
-            ApplyTheme();
+            ApplyTheme();   // fonts, colours and the button styles, before anything is shown
 
-            // Naming the pharmacy makes the requirement concrete. "Your order" would be
-            // vague in a checkout that is stepping through two shops in turn.
+            // Naming the pharmacy makes it concrete when the checkout steps through two shops.
             lblSubtitle.Text = _pharmacyName + " must verify this before your order can be dispatched.";
 
-            // Called before anything has been chosen, so Attach starts disabled and greyed
-            // rather than looking available and then refusing.
-            UpdateAttachButton();
+            UpdateAttachButton();   // nothing chosen yet, so Attach starts disabled and grey
         }
 
-        // Presentation only: fonts, colours and button styling, kept apart from the file
-        // handling below so a change of appearance cannot weaken a check.
+        // Presentation only, kept apart so a change of appearance cannot weaken a check.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Upload Prescription");
-            StartPosition = FormStartPosition.CenterParent;
+            UiTheme.StyleForm(this, "Upload Prescription");   // shared window setup and caption
+            StartPosition = FormStartPosition.CenterParent;   // centred on the checkout step
 
-            panelHeader.BackColor = UiTheme.Warning;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(255, 240, 220);
+            panelHeader.BackColor = UiTheme.Warning;          // amber: this stands between him and the order
+            lblTitle.Font = UiTheme.FontTitle;                // the shared heading font
+            lblTitle.ForeColor = Color.White;                 // the only colour that holds up on Warning
+            lblSubtitle.Font = UiTheme.FontSmall;             // smaller, it names the pharmacy
+            lblSubtitle.ForeColor = Color.FromArgb(255, 240, 220);   // pale tint, part of the strip
 
-            lblFileError.Font = UiTheme.FontSmall;
-            lblFileError.ForeColor = UiTheme.Danger;
-            lblFileInfo.Font = UiTheme.FontSmall;
-            lblFileInfo.ForeColor = UiTheme.TextMuted;
-            lblRules.Font = UiTheme.FontSmall;
-            lblRules.ForeColor = UiTheme.TextMuted;
+            lblFileError.Font = UiTheme.FontSmall;            // every rejection writes into this label
+            lblFileError.ForeColor = UiTheme.Danger;          // red, it only ever carries a refusal
+            lblFileInfo.Font = UiTheme.FontSmall;             // the name and size of an accepted file
+            lblFileInfo.ForeColor = UiTheme.TextMuted;        // muted, so it cannot read as an error
+            lblRules.Font = UiTheme.FontSmall;                // the caption listing JPG, PNG and 2 MB
+            lblRules.ForeColor = UiTheme.TextMuted;           // stated before a mistake, so it must not shout
 
-            UiTheme.StyleAccent(btnChooseFile);
-            UiTheme.StyleSuccess(btnAttach);
+            UiTheme.StyleAccent(btnChooseFile);               // choosing a file is the first thing to do
+            UiTheme.StyleSuccess(btnAttach);                  // green; UpdateAttachButton greys it out
+            // Bolder than its neighbours, because Attach is what lets the order proceed.
             btnAttach.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            UiTheme.StyleSecondary(btnCancel);
+            UiTheme.StyleSecondary(btnCancel);                // quiet: abandoning this abandons the order
         }
 
         // ---------------------------------------------------------------------
 
+        // Opens the browser; it only picks a path, every check lives in TryAcceptFile.
         private void btnChooseFile_Click(object sender, EventArgs e)
         {
-            // using, because the dialog holds a native common-dialog resource that is not
-            // released simply by the dialog closing.
+            // using, because the dialog holds a native resource beyond its closing.
             using (OpenFileDialog dialog = new OpenFileDialog())
             {
-                // The title says what is wanted. A default "Open" gives no hint that a
-                // photograph of the prescription is what should be chosen.
+                // The title says what is wanted; a default "Open" gives no hint.
                 dialog.Title = "Choose a photograph of your prescription";
 
-                // The filter narrows what is OFFERED, which is a convenience, not a
-                // control: a customer can still type any name into the box, and the
-                // browser's filter does nothing at all for a file passed in another way.
-                // That is why TryAcceptFile re-checks the extension itself.
+                // The filter narrows what is OFFERED, so TryAcceptFile re-checks the type.
                 dialog.Filter = "Prescription image (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png";
 
-                // Cancel leaves everything as it was, including any file already accepted,
-                // so backing out of the browser does not undo a good earlier choice.
+                // Cancel leaves everything as it was, including a good earlier choice.
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
-                // The chosen path is validated in one method, so a future drag and drop or
-                // paste could reuse exactly the same checks rather than copying them.
+                // One method for the checks, so a future drag and drop could reuse them.
                 TryAcceptFile(dialog.FileName);
             }
         }
 
+        // Four checks, cheapest first: exists, extension, size, then decoding the bytes.
         private void TryAcceptFile(string path)
         {
-            // Both are cleared FIRST. Every failing branch below returns without setting
-            // them again, so a rejected second choice cannot leave the previous file's
-            // preview on screen beside a fresh error message, or worse, leave a good path
-            // in the property while the customer is being told the file was refused.
+            // Cleared FIRST, so a refused second choice cannot leave the old file behind.
             ClearPreview();
-            SelectedImagePath = "";
+            SelectedImagePath = "";   // emptied too, so a refusal leaves no readable path
 
-            // FileInfo is used rather than separate File.Exists and File.ReadAllBytes
-            // calls, because it answers existence, extension, size and display name from
-            // one object and one look at the file system.
+            // FileInfo answers existence, extension, size and name from one look at disk.
             FileInfo file = new FileInfo(path);
 
-            // Checked even though the file was just picked from a browser: a network share
-            // can drop and a removable drive can be pulled out between the two moments.
+            // Checked again: a share can drop or a drive be pulled since it was picked.
             if (!file.Exists)
             {
-                UiTheme.ShowError(lblFileError, null, "That file no longer exists.");
-                UpdateAttachButton();   // keeps Attach disabled, since nothing valid was set
-                return;
+                UiTheme.ShowError(lblFileError, null, "That file no longer exists.");   // null: no box to outline
+                UpdateAttachButton();   // keeps Attach disabled, nothing valid was set
+                return;   // every failing branch returns, which is what protects the accept below
             }
 
-            // ToLowerInvariant, not ToLower: the invariant form does not depend on the
-            // machine's culture, so ".JPG" is matched the same way on every installation.
+            // ToLowerInvariant, not ToLower, so ".JPG" matches on every machine's culture.
             string extension = file.Extension.ToLowerInvariant();
 
-            // The type check is repeated here rather than left to the dialog's filter,
-            // because the filter only changes what the browser lists. Only image types are
-            // accepted because the pharmacy has to LOOK at the prescription: a PDF or a
-            // document would not load into the picture box on the verification screen.
-            // Both .jpg and .jpeg are listed since cameras and phones use each of them.
+            // Re-checked here, and only images: the pharmacy has to LOOK at the script.
             if (extension != ".jpg" && extension != ".jpeg" && extension != ".png")
             {
-                // The rejected extension is quoted back, so a customer who chose the wrong
-                // file can see which one was wrong instead of guessing.
+                // The rejected extension is quoted back, so the wrong file is identifiable.
                 UiTheme.ShowError(lblFileError, null,
-                    "Only JPG and PNG images are accepted. '" + extension + "' is not one of them.");
-                UpdateAttachButton();
-                return;
+                    "Only JPG and PNG images are accepted. '" + extension + "' is not one of them.");   // '' shows an empty one
+                UpdateAttachButton();   // stays disabled, SelectedImagePath is still ""
+                return;                 // stops before the size and decode checks
             }
 
-            // Size checked BEFORE the image is decoded, because loading a very large
-            // photograph into memory just to reject it would be wasteful - and a
-            // malformed huge file could fail in a less controlled way.
-            // MaxBytes is 2 * 1024 * 1024, written as a calculation rather than 2097152
-            // so the intent stays readable.
+            // Size BEFORE decoding, so a huge photograph is never loaded just to reject it.
             if (file.Length > MaxBytes)
             {
-                // 1024 / 1024.0 - the second divisor is a double on purpose, so the
-                // result keeps its fraction and reports "2.4 MB" rather than "2 MB".
+                // 1024.0 is a double on purpose, so the result keeps its fraction.
                 UiTheme.ShowError(lblFileError, null,
-                    "The image is " + (file.Length / 1024 / 1024.0).ToString("N1") +
-                    " MB. Please use a photograph under 2 MB.");
-                UpdateAttachButton();   // keeps Attach disabled, since no valid file was set
-                return;
+                    "The image is " + (file.Length / 1024 / 1024.0).ToString("N1") +   // N1: one decimal
+                    " MB. Please use a photograph under 2 MB.");                       // restates the limit
+                UpdateAttachButton();   // keeps Attach disabled, no valid file was set
+                return;                 // the bytes are never opened, which is the point
             }
 
-            // The last check is whether the bytes really are an image. An extension is only
-            // a name, so this opens the file and lets the decoder decide.
+            // An extension is only a name, so the last check lets the decoder decide.
             try
             {
-                // Read through a STREAM rather than with Image.FromFile, because FromFile
-                // keeps a lock on the file for as long as the Image object lives. That lock
-                // would still be held when the checkout copies the file a moment later.
+                // A STREAM, not Image.FromFile, which would keep the file locked.
                 using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read))
-                using (Image original = Image.FromStream(stream))
+                using (Image original = Image.FromStream(stream))   // throws for anything it cannot read
                 {
-                    // Copied into a new Bitmap, which holds pixels in memory rather than a
-                    // handle to disk. Both using blocks dispose at the closing brace, so
-                    // the file is released the moment the preview exists.
+                    // Copied into a Bitmap, which holds pixels rather than a disk handle.
                     picPreview.Image = new Bitmap(original);
                 }
             }
-            catch
+            catch   // any decoder failure: the outcome is the same whichever type it is
             {
-                // No exception variable, because the decoder's own wording ("parameter is
-                // not valid") explains nothing to a customer. What matters is the outcome:
-                // whatever this file is, it cannot be shown to the pharmacy as an image.
+                // No exception variable: "parameter is not valid" explains nothing to him.
                 UiTheme.ShowError(lblFileError, null, "That file could not be read as an image.");
-                UpdateAttachButton();
-                return;
+                UpdateAttachButton();   // disabled, because the assignment below was not reached
+                return;                 // returns from inside the catch, so nothing falls through
             }
 
-            // Set only now, after existence, type, size and decoding have all passed. This
-            // single assignment is what makes the property mean "a file that has been
-            // checked", which is exactly what the Attach button tests.
+            // Set only now, so the property means "a file that has been checked".
             SelectedImagePath = path;
-            UiTheme.ClearError(lblFileError, null);   // remove any complaint from an earlier attempt
+            UiTheme.ClearError(lblFileError, null);   // removes any complaint from an earlier try
 
-            // Name and size shown back, so the customer can confirm they chose the right
-            // photograph. KB here rather than MB because every accepted file is under 2 MB
-            // and "1,450 KB" is easier to judge against the limit than "1.4 MB".
+            // Name and size shown back; KB, because every accepted file is under 2 MB.
             lblFileInfo.Text = file.Name + "   -   " + (file.Length / 1024.0).ToString("N0") + " KB";
             UpdateAttachButton();   // the one call that can now actually enable Attach
         }
 
+        // Releases the preview and its caption, so no photograph outlives its choice.
         private void ClearPreview()
         {
-            // Disposed rather than just replaced. A Bitmap holds unmanaged memory, and this
-            // dialog can load several photographs in a row while a customer finds the right
-            // one; dropping the reference alone would leave each of them to the collector.
+            // Disposed, not just replaced: a Bitmap holds unmanaged memory each time.
             if (picPreview.Image != null)
             {
-                picPreview.Image.Dispose();
+                picPreview.Image.Dispose();   // frees the native handle immediately
 
-                // Nulled after disposing, so nothing can paint a bitmap that has already
-                // been released, which would throw during the next repaint.
+                // Nulled after disposing, so no repaint can touch a released bitmap.
                 picPreview.Image = null;
             }
 
-            // The caption goes with the picture. Leaving the old file's name under an empty
-            // frame would suggest a file is still attached when none is.
+            // The caption goes with the picture, or it would imply a file is still attached.
             lblFileInfo.Text = "";
         }
 
+        // The only place btnAttach's state is decided, from the property alone.
         private void UpdateAttachButton()
         {
-            // The button's state is derived from the property, not tracked in a flag of its
-            // own. One source of truth means the button cannot say "ready" while the path
-            // it would hand back is empty.
+            // Derived from the property, not from a flag: one source of truth.
             bool ready = !string.IsNullOrEmpty(SelectedImagePath);
-            btnAttach.Enabled = ready;
+            btnAttach.Enabled = ready;   // Enabled blocks the click, the colour is only the look
 
-            // Colour set alongside Enabled, because a themed button keeps its custom
-            // BackColor when disabled and would otherwise still look pressable.
+            // Set alongside Enabled: a themed button keeps its BackColor when disabled.
             btnAttach.BackColor = ready ? UiTheme.Success : Color.FromArgb(170, 190, 184);
         }
 
         // ---------------------------------------------------------------------
 
+        // Closes with OK, the checkout's signal to read the two properties.
         private void btnAttach_Click(object sender, EventArgs e)
         {
-            // Re-checked rather than trusted, because the Enter key can reach a click
-            // handler through a form's AcceptButton without the button being pressed.
+            // Re-checked, because Enter can reach a handler through the form's AcceptButton.
             if (string.IsNullOrEmpty(SelectedImagePath)) return;
 
-            // Read only on success. Trim, so a box containing spaces is handed back as an
-            // empty string, which the service then stores as NULL rather than as
-            // whitespace in DoctorName. The box's MaxLength matches the NVARCHAR(100)
-            // column, so the value cannot be too long to store.
+            // Trim, so a box of spaces comes back as "" and is stored as NULL, not blanks.
             DoctorName = txtDoctor.Text.Trim();
 
-            // The preview is released here, not in the form's Dispose, because the bitmap
-            // has done its job and the checkout window behind this one may be about to
-            // load another photograph for the next pharmacy in the basket.
+            // Released here: the checkout may load another photograph for the next shop.
             ClearPreview();
 
-            // OK is the signal the checkout waits for. Note what this dialog does NOT do:
-            // it writes no row and copies no file. The Prescriptions row needs an OrderId,
-            // and the order does not exist until Confirm Order has run its transaction, so
-            // the path is handed back and the checkout does the work afterwards.
-            //
-            // At that point PrescriptionService copies the file INTO the application's own
-            // Uploads folder rather than storing the path the customer chose. The original
-            // may sit on a USB stick, in a Downloads folder that gets emptied, or on a
-            // phone that is unplugged a minute later; a reference to it would be a picture
-            // the pharmacy could not open when it came to verify the order. The copy is
-            // given a name built from the order number and a timestamp, so two customers
-            // who both send "photo.jpg" cannot overwrite one another, and only a RELATIVE
-            // path is written to the database, because an absolute path from one computer
-            // means nothing on any other machine.
+            // No row is written here: Prescriptions needs an OrderId, and there is none.
             DialogResult = DialogResult.OK;
-            Close();
+            Close();   // returns to the checkout's ShowDialog, which then reads the properties
         }
 
+        // Abandons the dialog, but only after confirming: leaving also stalls the order.
         private void btnCancel_Click(object sender, EventArgs e)
         {
-            // Cancel is confirmed rather than taken at face value, because abandoning this
-            // dialog also abandons the order: without a prescription the Confirm button
-            // stays disabled, so a misclick here would leave the customer stuck at a step
-            // they could not complete. The message names the alternative as well.
+            // Confirmed, because without a prescription the Confirm button stays disabled.
             DialogResult answer = MessageBox.Show(
-                "Without a prescription this order cannot be confirmed.\r\n\r\n" +
-                "You can go back to your cart and remove the prescription only medicine instead.",
-                "No prescription attached", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+                "Without a prescription this order cannot be confirmed.\r\n\r\n" +                        // a blank line between paragraphs
+                "You can go back to your cart and remove the prescription only medicine instead.",        // names the way out
+                "No prescription attached", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);          // Cancel, meaning stay, is on the right
 
-            // Anything but OK means they changed their mind, so the dialog stays open with
-            // the chosen file and the preview exactly as they were.
+            // Anything but OK means he changed his mind, so the file and preview stay.
             if (answer != DialogResult.OK) return;
 
-            // Cleared deliberately. A file may already have been accepted before Cancel was
-            // pressed, and leaving the path in place would let the checkout read a
-            // prescription from a dialog the customer explicitly abandoned.
+            // Cleared deliberately: a file may have been accepted before Cancel was pressed.
             SelectedImagePath = "";
-            ClearPreview();
-            DialogResult = DialogResult.Cancel;
-            Close();
+            ClearPreview();                          // the bitmap goes with it
+            DialogResult = DialogResult.Cancel;      // on Cancel the checkout reads no properties
+            Close();                                 // hands control back to the ShowDialog call
         }
     }
 }

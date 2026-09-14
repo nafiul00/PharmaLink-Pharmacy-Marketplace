@@ -1,593 +1,400 @@
 using System.Data;                  // DataTable and DataRow, the shape every read comes back in
-using Microsoft.Data.SqlClient;     // SqlConnection, SqlTransaction, SqlCommand: needed only by RegisterPharmacyOwner
+using Microsoft.Data.SqlClient;     // SqlConnection and friends, for RegisterPharmacyOwner only
 using PharmaLinkApp.Database;       // DbHelper, the only class that knows the connection string
 using PharmaLinkApp.Helpers;        // PasswordHelper: salt creation, hashing, verification
 using PharmaLinkApp.Models;         // User and Pharmacy, the typed objects the rows become
 
+// Services keep SqlCommand out of Forms: a form sees only these methods.
 namespace PharmaLinkApp.Services
 {
-    // -------------------------------------------------------------------------
-    //  Layer: service.  Called by LoginForm, SignUpForm, MyProfileForm,
-    //  CheckoutForm and SuperAdminManageUsersForm.
-    //
-    //  Every query goes through DbHelper except RegisterPharmacyOwner, which
-    //  opens its own connection so the Users row and the Pharmacies row are
-    //  written inside one transaction.
-    //
-    //  This is the only service that uses PasswordHelper. Login reads the row by
-    //  email alone and verifies the hash in C#, because the salt is stored per
-    //  user and cannot be applied before that row has been read.
-    // -------------------------------------------------------------------------
+    // Every query here goes through DbHelper except RegisterPharmacyOwner.
 
-    /// <summary>
-    /// Everything to do with getting into the system: login, registration,
-    /// profile editing and password change.
-    ///
-    /// There is no separate administrator login. All three roles come through
-    /// the same query, and the UserType it returns is what decides which
-    /// dashboard opens.
-    /// </summary>
+    /// <summary>Login, registration, profile editing and password change.</summary>
     public class AuthService
     {
-        // One helper per service instance, not one per method. DbHelper holds no open
-        // connection of its own - each of its methods opens, runs and closes again - so
-        // sharing this field across the methods below is safe, and it saves re-reading
-        // the connection string out of App.config on every single call.
+        // One helper per service, since DbHelper opens and closes a connection per call.
         private readonly DbHelper _db = new DbHelper();
 
-        // ---------------------------------------------------------------------
-        //  LOGIN
-        // ---------------------------------------------------------------------
+        // ---- LOGIN ----
 
-        /// <summary>
-        /// Looks the account up by email, then verifies the typed password
-        /// against the stored salt and hash in memory. Returns null when the
-        /// email is unknown or the password is wrong.
-        ///
-        /// The LEFT JOIN on Pharmacies is what supplies PharmacyId for a
-        /// pharmacy owner. It is NULL for a SuperAdmin and for a Customer,
-        /// because neither of them owns a shop.
-        /// </summary>
+        /// <summary>Reads the row by email, then verifies the hash in memory.</summary>
         public User Login(string email, string password, out string failureReason)
         {
-            // Assigned on the very first line rather than at each exit. The compiler
-            // refuses a method that leaves an out parameter unset on any path, and doing
-            // it once here means a later early return cannot be the path that forgets.
-            // The empty string, not null, so the form can display it without a guard.
             failureReason = "";     // out parameters must be assigned on every path
 
-            // THE LOGIN QUERY. Note what is NOT here: the password.
-            // The report's section 7.1 puts "AND u.PasswordHash = @PasswordHash" in this
-            // WHERE clause. That only works if every account shares one salt, because
-            // otherwise the hash cannot be computed until you know which row you are
-            // looking at. Our salt is per user, so the row must be read FIRST and the
-            // hash compared afterwards, in memory. Keeping the comparison out of SQL
-            // also avoids leaking which half of the pair was wrong through query timing.
-            //
-            // The LEFT JOIN, not INNER, is what lets all three roles use one query:
-            // a pharmacy owner gets PharmacyId and PharmacyStatus filled in from the
-            // joined row, while a SuperAdmin or Customer matches no Pharmacies row and
-            // simply gets NULL in those three columns.
+            // Password not in the WHERE: the salt is per user, so read the row first.
             const string sql = @"
--- Everything the session will need, fetched in ONE round trip. A second query for the
--- pharmacy would have to be sent while the caller is still unauthenticated, and would
--- leave a window in which the two halves of the answer could disagree.
-SELECT  u.UserId, u.FullName, u.Email, u.PasswordHash, u.PasswordSalt,   -- the salt and hash travel back so C# can do the comparison
-        u.Phone, u.Address, u.UserType, u.Status, u.CreatedAt,           -- Status decides admission; UserType decides which dashboard opens
-        p.PharmacyId, p.PharmacyName, p.Status AS PharmacyStatus         -- aliased because BOTH tables have a column called Status
-FROM    Users u
-        -- LEFT, so a Customer or SuperAdmin still returns their row with NULLs in the
-        -- three pharmacy columns. OwnerId is UNIQUE in Pharmacies, so this join can add
-        -- at most one row and the result can never be duplicated by it.
+-- Everything the session needs in ONE round trip, so the halves cannot disagree.
+SELECT  u.UserId, u.FullName, u.Email, u.PasswordHash, u.PasswordSalt,   -- salt and hash travel back for the C# comparison
+        u.Phone, u.Address, u.UserType, u.Status, u.CreatedAt,           -- Status decides admission, UserType the dashboard
+        p.PharmacyId, p.PharmacyName, p.Status AS PharmacyStatus         -- aliased, because BOTH tables have a Status column
+FROM    Users u                                                          -- a login always starts from an account
+        -- LEFT, so a Customer or SuperAdmin still returns a row with NULLs here.
         LEFT JOIN Pharmacies p ON p.OwnerId = u.UserId
--- Email alone, and nothing else. UQ_Users_Email guarantees this matches either no rows
--- or exactly one, which is why the code below can take Rows[0] without looping.
+-- UQ_Users_Email means this matches no rows or exactly one, so Rows[0] is safe.
 WHERE   u.Email = @Email;";
 
-            // Passed as a PARAMETER, never concatenated, so a typed apostrophe is data
-            // and not SQL. Trim first: Email is UNIQUE and a trailing space would not match.
+            // A parameter, never concatenation, so a typed apostrophe stays data.
             DataTable table = _db.ExecuteTable(sql, DbHelper.P("@Email", email.Trim()));
 
-            // Rows.Count, not a null test: ExecuteTable always hands back a DataTable and
-            // returns an EMPTY one when nothing matched, so there is nothing to be null.
+            // Rows.Count, not null: ExecuteTable returns an empty table when nothing matched.
             if (table.Rows.Count == 0)
             {
-                // No such email. In a bank this message would be deliberately vague to
-                // avoid confirming which addresses are registered; for a course project
-                // the clearer message is the more useful one.
+                // A bank would be vaguer; the clearer message is more useful here.
                 failureReason = "No account is registered with that email address.";
-                return null;
+                return null;        // null is the single "not logged in" answer callers test
             }
 
             DataRow row = table.Rows[0];      // Email is UNIQUE, so there can only be one
 
-            // Read the two halves of the stored credential. The salt is what makes two
-            // users who picked the same password end up with different hashes.
             string salt = DbHelper.GetString(row, "PasswordSalt");   // 12 random bytes as 16 Base64 characters
-            string hash = DbHelper.GetString(row, "PasswordHash");   // Base64(SHA-256(salt + password)) as stored at registration
+            string hash = DbHelper.GetString(row, "PasswordHash");   // Base64(SHA-256(salt + password)) as stored
 
-            // Verify recomputes Base64(SHA-256(salt + typed password)) and compares it to
-            // the stored hash with an ordinal comparison. The plain password is never
-            // stored, never logged, and never sent to SQL Server.
-            // Identity is settled here, before anything else about the account is
-            // looked at, so the account-state messages below can only ever be seen by
-            // somebody who has already proved the password.
+            // Identity is settled before anything else about the account is looked at.
             if (!PasswordHelper.Verify(password, salt, hash))
             {
-                failureReason = "That password is not correct.";
-                return null;
+                failureReason = "That password is not correct.";   // names the password, so the right box is retyped
+                return null;        // the row matched but the credential failed
             }
 
-            // Password was right, so the person IS who they say. Whether they are allowed
-            // in is a separate question, and it is asked only after identity is proven.
-            // Status is constrained by CK_Users_Status to exactly these three values.
+            // Admission is a separate question, asked only once identity is proven.
             string status = DbHelper.GetString(row, "Status");
-            if (status == "Pending")
+            if (status == "Pending")   // registered but not yet approved by the Super Admin
             {
-                // A pharmacy owner who registered but whose DGDA licence the Super Admin
-                // has not checked yet. Seed account imran@newlifepharmacy.com sits here.
+                // An owner whose DGDA licence the Super Admin has not checked yet.
                 failureReason = "This account is still waiting for Super Admin approval.";
-                return null;
+                return null;        // refused, but approval later lets the same credentials in
             }
-            if (status == "Suspended")
+            if (status == "Suspended")   // approved once, then stopped by the Super Admin
             {
-                // Suspension is reversible and keeps the row, so every order this person
-                // ever placed stays intact. Deleting the user would break those foreign
-                // keys, which is why the Super Admin screen never offers a delete.
+                // Reversible and keeps the row, so past orders keep their foreign keys.
                 failureReason = "This account has been suspended by the Super Admin.";
-                return null;
+                return null;        // 'Active' is the only value left, and it falls through
             }
 
-            // Only now, with identity proved and the account cleared, is the object the
-            // rest of the application will carry around actually built.
+            // Only now is the object the rest of the application carries around built.
             User user = new User
             {
-                UserId = DbHelper.GetInt(row, "UserId"),
-                FullName = DbHelper.GetString(row, "FullName"),
-                Email = DbHelper.GetString(row, "Email"),
-                // GetString turns DBNull into "" and GetInt turns it into 0, which is why
-                // none of these assignments needs a null check of its own even though
-                // Address is nullable and the three pharmacy columns are NULL for two of
-                // the three roles.
+                UserId = DbHelper.GetInt(row, "UserId"),                  // the key every later query filters on
+                FullName = DbHelper.GetString(row, "FullName"),           // shown in the dashboard header
+                Email = DbHelper.GetString(row, "Email"),                 // the stored spelling, so casing is consistent
+                // GetString turns DBNull into "" and GetInt into 0, so no null checks here.
                 Phone = DbHelper.GetString(row, "Phone"),
-                Address = DbHelper.GetString(row, "Address"),
-                UserType = DbHelper.GetString(row, "UserType"),
-                // Reuses the local already read above rather than reading the column a
-                // second time, so the object cannot possibly disagree with the value the
-                // two guards were just tested against.
+                Address = DbHelper.GetString(row, "Address"),             // prefills the delivery box at checkout
+                UserType = DbHelper.GetString(row, "UserType"),           // 'Customer', 'Admin' or 'SuperAdmin'
+                // Reuses the local read above, so it cannot disagree with the two guards.
                 Status = status,
-                CreatedAt = DbHelper.GetDate(row, "CreatedAt"),
-                // 0 for a Customer or SuperAdmin, because the LEFT JOIN matched nothing.
-                // Every Admin side query later filters on this number, so it is the single
-                // value that keeps one shop's data out of another shop's screens.
+                CreatedAt = DbHelper.GetDate(row, "CreatedAt"),           // the join date the profile screen prints
+                // 0 for a Customer or SuperAdmin, and every Admin query filters on it.
                 PharmacyId = DbHelper.GetInt(row, "PharmacyId"),
-                PharmacyName = DbHelper.GetString(row, "PharmacyName")
-                // PasswordHash and PasswordSalt are deliberately NOT copied onto this
-                // object. They were needed for the comparison above and nothing past this
-                // method has any use for them, so the credential stops here.
+                PharmacyName = DbHelper.GetString(row, "PharmacyName")    // "" for anyone who owns no shop
+                // PasswordHash and PasswordSalt are not copied: the credential stops here.
             };
 
-            // A pharmacy that is suspended must not be able to trade even if the
-            // owner's own account row somehow says Active.
-            // "Admin" is this project's name for a pharmacy owner; the platform owner is
-            // "SuperAdmin". The test is on the returned object rather than the row so it
-            // reads the same way as every other check on a User elsewhere.
+            // "Admin" is this project's name for a pharmacy owner, not the platform owner.
             if (user.UserType == "Admin")
             {
-                // The shop's own status, from the joined row. CK_Pharmacies_Status allows
-                // only Pending, Approved and Suspended, so these two tests plus the
-                // fall-through cover every legal value.
+                // CK_Pharmacies_Status allows Pending, Approved and Suspended only.
                 string pharmacyStatus = DbHelper.GetString(row, "PharmacyStatus");
-                if (pharmacyStatus == "Pending")
+                if (pharmacyStatus == "Pending")   // the shop is filed but not yet vetted
                 {
-                    failureReason = "Your pharmacy registration has not been approved yet.";
-                    return null;
+                    failureReason = "Your pharmacy registration has not been approved yet.";   // names the shop, so the owner knows what to chase
+                    return null;    // refused at shop level even though the account passed
                 }
-                if (pharmacyStatus == "Suspended")
+                if (pharmacyStatus == "Suspended")   // the shop was trading and has been stopped
                 {
-                    // Suspending the shop, not the person: the owner's Users row can stay
-                    // Active while the business is stopped from selling, and approving the
-                    // shop again restores trading without touching the account.
+                    // The shop is stopped, not the person: the Users row can stay Active.
                     failureReason = "Your pharmacy has been suspended by the Super Admin.";
-                    return null;
+                    return null;    // 'Approved' is the only value left, and it falls through
                 }
             }
 
-            // Reaching here means: email found, password verified, account allowed in,
-            // and, for an owner, the shop allowed to trade. The caller stores this object
-            // in UserSession and opens the dashboard that matches user.UserType.
+            // Email found, password verified, account admitted, and the shop too.
             return user;
         }
 
-        // ---------------------------------------------------------------------
-        //  REGISTRATION
-        // ---------------------------------------------------------------------
+        // ---- REGISTRATION ----
 
+        // Asked while the user is still typing, so a clash appears beside the box.
         public bool EmailExists(string email)
         {
-            // A courtesy check so the sign-up form can say "that email is already
-            // registered" in its own validation, instead of letting the INSERT fail on
-            // UQ_Users_Email and surfacing a constraint error. The UNIQUE constraint is
-            // still the real guarantee: this read and the later INSERT are two separate
-            // round trips, so only the database can settle a genuine race.
+            // A courtesy check; UQ_Users_Email is still the real guarantee against a race.
             return _db.ExecuteScalarInt(
-                // COUNT(*) rather than SELECT TOP 1, because a count always returns
-                // exactly one row and one value, so there is no "no rows" case to handle.
+                // COUNT(*) always returns one row and one value, so there is no empty case.
                 "SELECT COUNT(*) FROM Users WHERE Email = @Email;",
-                // Trimmed to match exactly what RegisterCustomer will store, otherwise
-                // "ali@x.com " would be reported as free and then collide on insert.
+                // Trimmed to match what RegisterCustomer stores, or a space would mislead.
                 DbHelper.P("@Email", email.Trim())) > 0;
         }
 
+        // The same pre-flight for the mobile, so the form can light up the right box.
         public bool PhoneExists(string phone)
         {
-            // Phone carries UQ_Users_Phone as well, so the same pre-flight applies: one
-            // mobile number belongs to one account, which is what stops a person opening
-            // several customer accounts against the same contact details.
+            // UQ_Users_Phone: one number per account, so one person cannot open several.
             return _db.ExecuteScalarInt(
-                "SELECT COUNT(*) FROM Users WHERE Phone = @Phone;",
-                DbHelper.P("@Phone", phone.Trim())) > 0;
+                "SELECT COUNT(*) FROM Users WHERE Phone = @Phone;",   // one statement, one value
+                DbHelper.P("@Phone", phone.Trim())) > 0;              // > 0 turns the count into a yes/no
         }
 
+        // Only the pharmacy half of the form calls this: a customer has no licence.
         public bool LicenseExists(string licenseNo)
         {
-            // Pharmacies, not Users: the DGDA licence number is unique per shop
-            // (UQ_Pharmacies_License), which is what stops one licence being used to
-            // register two storefronts on the platform.
+            // UQ_Pharmacies_License stops one licence registering two storefronts.
             return _db.ExecuteScalarInt(
-                "SELECT COUNT(*) FROM Pharmacies WHERE LicenseNo = @LicenseNo;",
-                DbHelper.P("@LicenseNo", licenseNo.Trim())) > 0;
+                "SELECT COUNT(*) FROM Pharmacies WHERE LicenseNo = @LicenseNo;",   // the licence lives on the shop row
+                DbHelper.P("@LicenseNo", licenseNo.Trim())) > 0;                   // trimmed: the index compares text exactly
         }
 
-        /// <summary>
-        /// Registers a customer. A customer is created Active and can use the
-        /// platform immediately.
-        /// </summary>
+        /// <summary>Registers a customer, created Active and usable at once.</summary>
         public int RegisterCustomer(User user, string password)
         {
-            // Salt first, then hash, because the hash is computed FROM the salt. A fresh
-            // salt per account is what makes two people who chose the same password end
-            // up with two unrelated hashes in the table.
+            // Salt first: the hash is computed FROM it, and a fresh one per account.
             string salt = PasswordHelper.CreateSalt();
-            string hash = PasswordHelper.Hash(password, salt);
+            string hash = PasswordHelper.Hash(password, salt);   // the plain text is never kept
 
+            // One batch: the INSERT plus the SELECT that reads back the generated id.
             const string sql = @"
--- 'Customer' and 'Active' are written as literals rather than parameters on purpose:
--- they are policy decided by this method, not input from the form, so there is no path
--- by which a filled-in field could turn a sign-up into an Admin account. CK_Users_Type
--- and CK_Users_Status would reject anything else in any case.
+-- 'Customer' and 'Active' are literals, so no field can change the role.
 INSERT INTO Users (FullName, Email, PasswordHash, PasswordSalt, Phone, Address, UserType, Status)
+-- Columns named explicitly, so a later ALTER TABLE cannot shift a value sideways.
 VALUES (@FullName, @Email, @Hash, @Salt, @Phone, @Address, 'Customer', 'Active');
--- Second statement in the SAME batch, so the new id comes back on the same round trip
--- and cannot be confused with an id created by somebody else in between.
--- SCOPE_IDENTITY() is scoped to this INSERT; @@IDENTITY would return an id generated by
--- a trigger on another table. The CAST is because it returns NUMERIC(38,0), not INT.
+-- SCOPE_IDENTITY() is scoped to this INSERT, and CAST because it is NUMERIC.
 SELECT CAST(SCOPE_IDENTITY() AS INT);";
 
-            // ExecuteScalarInt reads the single value the final SELECT produced, so the
-            // caller gets the new UserId and can log the customer straight in.
+            // ExecuteScalarInt reads the final SELECT, so the caller gets the new UserId.
             return _db.ExecuteScalarInt(sql,
-                DbHelper.P("@FullName", user.FullName.Trim()),
-                DbHelper.P("@Email", user.Email.Trim()),
-                // The hash and the salt, never the password itself. Nothing in this method
-                // holds the plain text after the two lines above.
+                DbHelper.P("@FullName", user.FullName.Trim()),   // trimmed: it is printed in every header
+                DbHelper.P("@Email", user.Email.Trim()),         // trimmed: UQ_Users_Email compares text exactly
+                // The hash and the salt, never the password itself.
                 DbHelper.P("@Hash", hash),
-                DbHelper.P("@Salt", salt),
-                DbHelper.P("@Phone", user.Phone.Trim()),
-                // Address is NOT trimmed: it is free text where the typist's own line
-                // breaks are meaningful, and unlike Email and Phone it carries no UNIQUE
-                // constraint that stray spaces could defeat. DbHelper.P turns a null into
-                // DBNull, which the nullable column accepts.
+                DbHelper.P("@Salt", salt),                       // stored beside the hash, since both are needed
+                DbHelper.P("@Phone", user.Phone.Trim()),         // trimmed: UQ_Users_Phone is an exact match too
+                // Address is NOT trimmed: free text with no UNIQUE constraint on it.
                 DbHelper.P("@Address", user.Address));
         }
 
-        /// <summary>
-        /// Registers a pharmacy owner. The Users row and the Pharmacies row are
-        /// written inside one transaction, both with Status 'Pending', so the
-        /// application can never end up with an owner who has no shop or a shop
-        /// that has no owner. Neither becomes usable until the Super Admin
-        /// approves the registration.
-        /// </summary>
+        /// <summary>Both rows are written in one transaction, both 'Pending'.</summary>
         public int RegisterPharmacyOwner(User owner, Pharmacy pharmacy, string password)
         {
-            // Hashing happens BEFORE the connection is opened. SHA-256 is fast, but doing
-            // any avoidable work while a transaction is open holds locks for longer than
-            // necessary, and there is nothing here that needs the database.
+            // Hashed before the connection opens, so no lock is held for avoidable work.
             string salt = PasswordHelper.CreateSalt();
-            string hash = PasswordHelper.Hash(password, salt);
+            string hash = PasswordHelper.Hash(password, salt);   // computed once and reused below
 
-            // This method opens its own connection instead of calling DbHelper's helpers,
-            // because the two INSERTs must share one transaction and DbHelper deliberately
-            // opens and closes a connection per call. using guarantees the connection goes
-            // back to the pool even if an exception is thrown halfway through.
+            // Its own connection, because the two INSERTs must share one transaction.
             using (SqlConnection conn = _db.GetConnection())
             {
-                // Explicit Open, unlike ExecuteTable where the data adapter opens and
-                // closes for you. A transaction cannot be started on a closed connection.
+                // Explicit Open: a transaction cannot start on a closed connection.
                 conn.Open();
-                // Default isolation (ReadCommitted) is enough here: this method only
-                // inserts and never re-reads a row it has to see unchanged, so the range
-                // locks Serializable would take would cost concurrency for no benefit.
+                // Default ReadCommitted is enough: this method inserts and never re-reads.
                 using (SqlTransaction tx = conn.BeginTransaction())
                 {
+                    // try around BOTH inserts, so the rollback is reached either way.
                     try
                     {
-                        // Declared out here, not inside the using below, because the second
-                        // INSERT needs it after that block has closed.
+                        // Declared out here, because the second INSERT needs it later.
                         int newUserId;
 
+                        // Same shape as RegisterCustomer, but 'Admin' and 'Pending'.
                         const string insertUser = @"
--- 'Admin' is the pharmacy owner role. 'Pending' is the important part: the account is
--- created but cannot log in, because Login refuses a Pending status. Approval by the
--- Super Admin is what flips it, so no shop can start trading unchecked.
+-- 'Pending' is the point: Login refuses it, so no shop starts trading unchecked.
 INSERT INTO Users (FullName, Email, PasswordHash, PasswordSalt, Phone, Address, UserType, Status)
+-- Neither literal is a parameter, so the form cannot make this an Active account.
 VALUES (@FullName, @Email, @Hash, @Salt, @Phone, @Address, 'Admin', 'Pending');
--- The generated UserId is needed immediately as the Pharmacies.OwnerId below, so it is
--- selected back rather than re-read with a second query on Email.
+-- The new UserId is needed at once as Pharmacies.OwnerId, so it is selected back.
 SELECT CAST(SCOPE_IDENTITY() AS INT);";
 
-                        // The third constructor argument, tx, enlists this command in the
-                        // open transaction. Omitting it throws, because a connection with a
-                        // pending transaction will not run an unenlisted command.
+                        // The third argument, tx, enlists this command in the transaction.
                         using (SqlCommand cmd = new SqlCommand(insertUser, conn, tx))
                         {
-                            // AddWithValue rather than DbHelper.P because these commands are
-                            // built by hand here; the protection is identical, since the
-                            // values still travel separately from the SQL text.
+                            // AddWithValue here, but the values still travel apart from the SQL.
                             cmd.Parameters.AddWithValue("@FullName", owner.FullName.Trim());
-                            cmd.Parameters.AddWithValue("@Email", owner.Email.Trim());
-                            cmd.Parameters.AddWithValue("@Hash", hash);
-                            cmd.Parameters.AddWithValue("@Salt", salt);
-                            cmd.Parameters.AddWithValue("@Phone", owner.Phone.Trim());
-                            // DBNull.Value, not a C# null: ADO.NET treats a null Value as
-                            // "parameter not supplied" and throws rather than sending NULL.
-                            // The (object) cast is what lets the two sides of ?? share a
-                            // type, since string and DBNull have no conversion between them.
+                            cmd.Parameters.AddWithValue("@Email", owner.Email.Trim());     // UQ_Users_Email, so the space has to go
+                            cmd.Parameters.AddWithValue("@Hash", hash);                    // the computed hash, never the typed password
+                            cmd.Parameters.AddWithValue("@Salt", salt);                    // useless on its own, and meaningless alone
+                            cmd.Parameters.AddWithValue("@Phone", owner.Phone.Trim());     // UQ_Users_Phone, same exact-match reason
+                            // DBNull.Value, not null: ADO.NET reads null as "not supplied".
                             cmd.Parameters.AddWithValue("@Address", (object)owner.Address ?? DBNull.Value);
-                            // ExecuteScalar hands back the first column of the first row as
-                            // object; Convert.ToInt32 unboxes the CAST(... AS INT) above.
+                            // ExecuteScalar returns object, so Convert unboxes the CAST above.
                             newUserId = Convert.ToInt32(cmd.ExecuteScalar());
                         }
 
+                        // The second half: nothing is durable until the Commit below.
                         const string insertPharmacy = @"
--- The shop is created 'Pending' too, so even if the owner's account were activated by
--- some other route the pharmacy still could not trade until it is approved on its own.
--- CommissionRate is left out deliberately: DF_Pharmacies_Comm supplies the platform
--- default of 8 percent, and only the Super Admin may change it afterwards.
-INSERT INTO Pharmacies (OwnerId, PharmacyName, LicenseNo, Area, Address, ContactPhone, LogoPath, Status)
+-- The shop is 'Pending' too, so it cannot trade until it is approved on its own.
+INSERT INTO Pharmacies (OwnerId, PharmacyName, LicenseNo, Area, Address, ContactPhone, LogoPath, Status)   -- CommissionRate is left to DF_Pharmacies_Comm
+-- No SCOPE_IDENTITY() here: nobody needs the new PharmacyId before approval.
 VALUES (@OwnerId, @Name, @License, @Area, @Address, @Phone, @Logo, 'Pending');";
 
-                        using (SqlCommand cmd = new SqlCommand(insertPharmacy, conn, tx))
+                        using (SqlCommand cmd = new SqlCommand(insertPharmacy, conn, tx))   // tx again, so both inserts share it
                         {
-                            // The id generated moments ago, which is what ties the two rows
-                            // together. UQ_Pharmacies_Owner makes OwnerId unique, so this is
-                            // also the constraint that enforces one shop per owner.
+                            // The id from a moment ago; UQ_Pharmacies_Owner keeps it one per owner.
                             cmd.Parameters.AddWithValue("@OwnerId", newUserId);
-                            cmd.Parameters.AddWithValue("@Name", pharmacy.PharmacyName.Trim());
-                            // Trimmed because UQ_Pharmacies_License compares the stored text
-                            // exactly: " DGDA-123" and "DGDA-123" would both be accepted as
-                            // unique and the same licence would exist twice.
+                            cmd.Parameters.AddWithValue("@Name", pharmacy.PharmacyName.Trim());   // the shop name customers search on
+                            // Trimmed, or " DGDA-123" and "DGDA-123" would both look unique.
                             cmd.Parameters.AddWithValue("@License", pharmacy.LicenseNo.Trim());
-                            // Area drives the customer's "pharmacies near me" filter, so a
-                            // stray space would put the shop in a group of its own.
+                            // Area drives the "pharmacies near me" filter, so spaces matter.
                             cmd.Parameters.AddWithValue("@Area", pharmacy.Area.Trim());
-                            cmd.Parameters.AddWithValue("@Address", pharmacy.Address.Trim());
-                            cmd.Parameters.AddWithValue("@Phone", pharmacy.ContactPhone.Trim());
-                            // A logo is optional. IsNullOrWhiteSpace catches null, "" and a
-                            // box the user only put spaces in, all of which should become a
-                            // real NULL rather than an empty path the image loader would
-                            // later try to open. The (object) cast on one branch is what
-                            // gives the conditional a common type.
+                            cmd.Parameters.AddWithValue("@Address", pharmacy.Address.Trim());        // the shop's address, not the owner's
+                            cmd.Parameters.AddWithValue("@Phone", pharmacy.ContactPhone.Trim());     // the shop's public number
+                            // A logo is optional, and null, "" or spaces should all become NULL.
                             cmd.Parameters.AddWithValue("@Logo",
-                                string.IsNullOrWhiteSpace(pharmacy.LogoPath) ? (object)DBNull.Value : pharmacy.LogoPath);
-                            // ExecuteNonQuery, not ExecuteScalar: nothing needs the new
-                            // PharmacyId back, because the owner is not logged in yet.
+                                string.IsNullOrWhiteSpace(pharmacy.LogoPath) ? (object)DBNull.Value : pharmacy.LogoPath);   // NULL beats an empty path
+                            // ExecuteNonQuery: nothing needs the new PharmacyId back.
                             cmd.ExecuteNonQuery();
                         }
 
-                        // Both rows become visible at the same instant. Until this line runs
-                        // nothing is durable, so a failure in the second INSERT leaves no
-                        // half-registered owner behind.
+                        // Both rows become visible at the same instant, or neither does.
                         tx.Commit();
-                        // The caller uses this only to confirm the registration was filed;
-                        // the owner still cannot log in until the Super Admin approves.
+                        // Confirms the filing only; the owner still waits for approval.
                         return newUserId;
                     }
+                    // Catches everything, because any failure has to undo the first INSERT.
                     catch
                     {
-                        // Undo the first INSERT if the second one failed, say on a
-                        // duplicate licence number. Without this the Users table would keep
-                        // an owner row with no shop attached to it.
+                        // Without this the Users table would keep an owner with no shop.
                         tx.Rollback();
-                        // Bare throw, not "throw ex": it rethrows the SAME exception with the
-                        // original stack trace, so the form sees what actually went wrong.
-                        // Because this path bypassed DbHelper, what comes out is a raw
-                        // SqlException rather than a DataAccessException, which is why
-                        // Program.cs carries a second SqlException branch.
+                        // Bare throw, so the original stack trace reaches Program.cs intact.
                         throw;
                     }
                 }
             }
         }
 
-        // ---------------------------------------------------------------------
-        //  PROFILE AND PASSWORD
-        // ---------------------------------------------------------------------
+        // ---- PROFILE AND PASSWORD ----
 
+        // Reads one account by primary key, and returns null when the id is unknown.
         public User GetUser(int userId)
         {
+            // Narrower than the login query: this one is for display, not for credentials.
             const string sql = @"
--- PasswordHash and PasswordSalt are NOT in this list, unlike the login query. No screen
--- that shows a profile has any use for them, so they never reach memory at all.
+-- No PasswordHash or PasswordSalt here, so they never reach memory at all.
 SELECT  u.UserId, u.FullName, u.Email, u.Phone, u.Address, u.UserType,
-        u.Status, u.CreatedAt, p.PharmacyId, p.PharmacyName
-FROM    Users u
-        -- Same LEFT JOIN as the login query, so an owner's profile screen can show the
-        -- shop name while a customer's simply shows nothing there.
+        u.Status, u.CreatedAt, p.PharmacyId, p.PharmacyName              -- read-only facts plus the two joined columns
+FROM    Users u                                                          -- a profile is an account first, a shop sometimes
+        -- Same LEFT JOIN, so an owner sees a shop name and a customer sees nothing.
         LEFT JOIN Pharmacies p ON p.OwnerId = u.UserId
--- By primary key this time, not by email: the caller already knows who it is asking
--- about, because the id came from UserSession.
+-- By primary key this time, because the id came from UserSession.
 WHERE   u.UserId = @UserId;";
 
-            DataTable table = _db.ExecuteTable(sql, DbHelper.P("@UserId", userId));
-            // null, not an empty User: "no such account" and "an account with blank
-            // fields" are different answers, and the caller must be able to tell them
-            // apart rather than showing an empty profile for a deleted id.
+            DataTable table = _db.ExecuteTable(sql, DbHelper.P("@UserId", userId));   // one trip, at most one row
+            // null, not an empty User: "no such account" is a different answer from blank.
             if (table.Rows.Count == 0) return null;
 
             DataRow row = table.Rows[0];      // UserId is the primary key, so at most one
-            // Built inline and returned in one expression, because nothing has to be
-            // decided between reading the row and handing it back.
+            // Built and returned in one expression: nothing has to be decided in between.
             return new User
             {
-                UserId = DbHelper.GetInt(row, "UserId"),
-                FullName = DbHelper.GetString(row, "FullName"),
-                Email = DbHelper.GetString(row, "Email"),
-                Phone = DbHelper.GetString(row, "Phone"),
-                Address = DbHelper.GetString(row, "Address"),
-                UserType = DbHelper.GetString(row, "UserType"),
-                Status = DbHelper.GetString(row, "Status"),
-                CreatedAt = DbHelper.GetDate(row, "CreatedAt"),
-                // 0 and "" for anyone who does not own a shop, because the join matched
-                // no row and the GetX helpers turn DBNull into the type's empty value.
+                UserId = DbHelper.GetInt(row, "UserId"),              // echoed back, so the caller can trust the object
+                FullName = DbHelper.GetString(row, "FullName"),       // the editable name box on the profile form
+                Email = DbHelper.GetString(row, "Email"),             // shown read only: it is the login identifier
+                Phone = DbHelper.GetString(row, "Phone"),             // editable, and compared against itself on save
+                Address = DbHelper.GetString(row, "Address"),         // DBNull becomes "", so the box binds unguarded
+                UserType = DbHelper.GetString(row, "UserType"),       // decides the caption over the address box
+                Status = DbHelper.GetString(row, "Status"),           // display only; this screen never writes it
+                CreatedAt = DbHelper.GetDate(row, "CreatedAt"),       // printed as "Member since"
+                // 0 and "" when the join matched no row, which is every customer.
                 PharmacyId = DbHelper.GetInt(row, "PharmacyId"),
-                PharmacyName = DbHelper.GetString(row, "PharmacyName")
+                PharmacyName = DbHelper.GetString(row, "PharmacyName")   // blank for a customer, as the screen expects
             };
         }
 
-        /// <summary>Email is deliberately not editable: it is the login identifier.</summary>
+        /// <summary>Email is not editable: it is the login identifier.</summary>
         public bool UpdateProfile(int userId, string fullName, string phone, string address)
         {
+            // The SET list is the security story: an unnamed column cannot be written.
             const string sql = @"
+-- One table and one row; a shop's own details are edited through PharmacyService.
 UPDATE  Users
--- Three columns and no more. Email is absent because it is what people log in with and
--- what UQ_Users_Email keys on; UserType and Status are absent because letting a profile
--- screen write them would let a customer promote or unsuspend themselves.
+-- Three columns only: Email, UserType and Status are absent on purpose.
 SET     FullName = @FullName, Phone = @Phone, Address = @Address
--- Keyed on the id held in UserSession, so one account can only ever edit itself.
+-- Keyed on the UserSession id, so one account can only ever edit itself.
 WHERE   UserId = @UserId;";
 
-            // == 1 is both the write and the proof it landed: ExecuteNonQuery returns the
-            // rows affected, so anything other than one row means the id was wrong and the
-            // form should say so rather than reporting a save that never happened.
+            // == 1 is the write and the proof: anything else means the id was wrong.
             return _db.ExecuteNonQuery(sql,
-                // Trimmed, because these two are displayed everywhere and Phone is UNIQUE.
+                // Trimmed, because both are displayed everywhere and Phone is UNIQUE.
                 DbHelper.P("@FullName", fullName.Trim()),
-                DbHelper.P("@Phone", phone.Trim()),
-                // Address keeps the user's own formatting, as at registration.
+                DbHelper.P("@Phone", phone.Trim()),         // an untrimmed number would slip past the UNIQUE index
+                // Address keeps the user's own formatting, as it did at registration.
                 DbHelper.P("@Address", address),
-                DbHelper.P("@UserId", userId)) == 1;
+                DbHelper.P("@UserId", userId)) == 1;        // exactly one row, or the form reports failure
         }
 
-        /// <summary>
-        /// Changes a password. The current password is verified against the
-        /// stored hash inside the same UPDATE, so a wrong entry simply updates
-        /// no rows and the form reports failure without the old hash ever
-        /// having been read into memory by the caller.
-        /// </summary>
+        /// <summary>The current password is verified inside the same UPDATE.</summary>
         public bool ChangePassword(int userId, string currentPassword, string newPassword)
         {
-            // Read this user's CURRENT salt first. Without it the typed "current password"
-            // cannot be hashed into anything comparable, because the salt is per user.
+            // The salt is per user, so it must be read before anything can be hashed.
             string currentSalt = _db.ExecuteScalarString(
-                "SELECT PasswordSalt FROM Users WHERE UserId = @UserId;",
-                DbHelper.P("@UserId", userId));
+                "SELECT PasswordSalt FROM Users WHERE UserId = @UserId;",   // the SALT only, never the stored hash
+                DbHelper.P("@UserId", userId));                             // by primary key: one value or none
 
-            // ExecuteScalarString returns "" rather than null when the query found nothing,
-            // so both are tested. An unknown id fails here instead of hashing against an
-            // empty salt and producing a value that could never match anything anyway.
+            // ExecuteScalarString returns "" for no rows, so an unknown id fails here.
             if (string.IsNullOrEmpty(currentSalt)) return false;   // no such user
 
-            // What the stored hash SHOULD be if the typed current password is correct.
-            // Nothing is compared yet: this value is about to become a WHERE parameter.
+            // What the stored hash SHOULD be; it is about to become a WHERE parameter.
             string currentHash = PasswordHelper.Hash(currentPassword, currentSalt);
 
-            // A password change gets a brand new salt, not a reuse of the old one. If the
-            // salt were kept, anyone who had seen the old hash could tell the password had
-            // changed, and rainbow work done against that salt would still apply.
+            // A brand new salt, so work done against the old one no longer applies.
             string newSalt = PasswordHelper.CreateSalt();
-            string newHash = PasswordHelper.Hash(newPassword, newSalt);
+            string newHash = PasswordHelper.Hash(newPassword, newSalt);   // the plain text is dropped here
 
-            // The check and the write are ONE statement. "AND PasswordHash = @OldHash"
-            // means a wrong current password matches no row, so the UPDATE changes
-            // nothing and ExecuteNonQuery returns 0. There is no window between reading
-            // the old hash and writing the new one in which anything could change.
+            // Unlike Login, the UserId is known already, so the check CAN live in the WHERE.
             const string sql = @"
+-- No SELECT anywhere near it: the verification is folded into the WHERE below.
 UPDATE  Users
--- Both halves are replaced together. Writing the hash without its matching salt would
--- lock the account out permanently, because verification would then combine the new
--- hash with the old salt and could never agree.
+-- Both halves together: a new hash beside the old salt would lock the account out.
 SET     PasswordHash = @NewHash, PasswordSalt = @NewSalt
--- Two conditions: the right account AND proof of the current password. The second is
--- what makes this safe to call from a form that already has a session open - knowing
--- the UserId is not enough on its own.
+-- Two conditions: the right account AND proof of the current password.
 WHERE   UserId = @UserId AND PasswordHash = @OldHash;";
 
-            // == 1 is the whole result: exactly one row changed means success. 0 means the
-            // current password was wrong, and the form turns that into a message.
+            // == 1 means success; 0 means the current password was wrong, not an error.
             return _db.ExecuteNonQuery(sql,
-                DbHelper.P("@NewHash", newHash),
-                DbHelper.P("@NewSalt", newSalt),
-                DbHelper.P("@UserId", userId),
-                // The hash of what the user typed as their current password, never the
-                // typed text itself: the comparison happens on hashes at both ends.
+                DbHelper.P("@NewHash", newHash),    // what the account verifies against from now on
+                DbHelper.P("@NewSalt", newSalt),    // same SET, because a hash without its salt is unusable
+                DbHelper.P("@UserId", userId),      // from UserSession, so it can only change its own
+                // The HASH of the typed current password, never the typed text itself.
                 DbHelper.P("@OldHash", currentHash)) == 1;
         }
 
-        // ---------------------------------------------------------------------
-        //  SUPER ADMIN: USER LIST
-        // ---------------------------------------------------------------------
+        // ---- SUPER ADMIN: USER LIST ----
 
-        /// <summary>
-        /// Requirement 4. Every Admin and Customer in one grid, with the shop
-        /// name filled in beside an owner's row through a LEFT JOIN. An empty
-        /// keyword or status means "no filter" rather than "no results".
-        /// </summary>
+        /// <summary>Requirement 4. An empty box means "no filter", not "no rows".</summary>
         public DataTable SearchUsers(string keyword, string status, string userType)
         {
+            // One query serves the unfiltered grid and every combination of the boxes.
             const string sql = @"
+-- A display list, so no credential columns for the Super Admin either.
 SELECT  u.UserId, u.FullName, u.Email, u.Phone, u.UserType, u.Status,
-        -- ISNULL so a customer's row shows a dash rather than an empty cell, which in a
-        -- DataGridView is indistinguishable from a value that failed to load.
+        -- ISNULL, so a customer shows a dash rather than a cell that looks unloaded.
         ISNULL(p.PharmacyName, '-') AS PharmacyName, u.CreatedAt
-FROM    Users u
+FROM    Users u                                                          -- every account is listed, shop or no shop
+        -- LEFT again: an INNER JOIN here would quietly drop every customer.
         LEFT JOIN Pharmacies p ON p.OwnerId = u.UserId
--- The platform's own account is filtered out in the QUERY, not hidden by the grid, so
--- there is no code path on this screen that can suspend the Super Admin.
+-- Filtered in the QUERY, so no path on this screen can suspend the Super Admin.
 WHERE   u.UserType <> 'SuperAdmin'
-  -- The optional filter pattern used across this project: an empty string means no
-  -- filter at all and the OR short circuits the rest of the test, so one query serves
-  -- the unfiltered grid and every combination of the three boxes. The wildcards are added
-  -- HERE, around the parameter, rather than in C#, so the keyword itself stays data and
-  -- a typed % cannot turn into a wildcard the user did not intend.
+  -- An empty box means no filter, and the wildcards are added here, not in C#.
   AND   (@Keyword  = '' OR u.FullName LIKE '%' + @Keyword + '%' OR u.Email LIKE '%' + @Keyword + '%')
+  -- Same shape for the status list, whose blank entry means 'any status'.
   AND   (@Status   = '' OR u.Status   = @Status)
+  -- And for the role list, so the two can be combined or left alone freely.
   AND   (@UserType = '' OR u.UserType = @UserType)
--- Grouped by role first so the owners and the customers read as two blocks.
+-- Grouped by role first, so the owners and the customers read as two blocks.
 ORDER BY u.UserType, u.FullName;";
 
-            return _db.ExecuteTable(sql,
-                // ?? "" matters: a NULL parameter would make "@Keyword = ''" evaluate to
-                // UNKNOWN rather than true, every row would fail the test, and an empty
-                // filter box would silently return an empty grid.
+            return _db.ExecuteTable(sql,   // a grid binds straight to the DataTable
+                // ?? "" matters: a NULL parameter makes the test UNKNOWN and empties the grid.
                 DbHelper.P("@Keyword", keyword ?? ""),
-                DbHelper.P("@Status", status ?? ""),
-                DbHelper.P("@UserType", userType ?? ""));
+                DbHelper.P("@Status", status ?? ""),       // the same NULL trap, so the same guard
+                DbHelper.P("@UserType", userType ?? ""));  // and once more for the role filter
         }
 
+        // Suspends or reactivates one account, and returns false when nothing was written.
         public bool SetUserStatus(int userId, string newStatus)
         {
-            return _db.ExecuteNonQuery(
-                // The "AND UserType <> 'SuperAdmin'" guard lives in the WHERE rather than
-                // in a C# if, so even a call made with the platform account's id simply
-                // updates no rows. A disabled button on the form is a courtesy; this is
-                // the rule. newStatus is not validated here either, because CK_Users_Status
-                // already refuses anything outside Pending, Active and Suspended and
-                // DbHelper translates that rejection into a readable sentence.
+            return _db.ExecuteNonQuery(   // rows affected, which is the evidence it landed
+                // The SuperAdmin guard is in the WHERE, so such a call updates no rows.
                 "UPDATE Users SET Status = @Status WHERE UserId = @UserId AND UserType <> 'SuperAdmin';",
-                DbHelper.P("@Status", newStatus),
-                // == 1 means exactly one account changed. 0 means the id was unknown or it
-                // was the Super Admin's, and either way nothing was written.
+                DbHelper.P("@Status", newStatus),   // untouched: CK_Users_Status is the validator
+                // == 1 means one account changed; 0 means unknown id or the Super Admin.
                 DbHelper.P("@UserId", userId)) == 1;
         }
     }

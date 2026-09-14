@@ -1,97 +1,37 @@
+// One namespace for the whole model layer, so a form gets it all with one using.
 namespace PharmaLinkApp.Models
 {
-    /// <summary>
-    /// A product on a pharmacy's shelf. Two pharmacies selling the same brand
-    /// are two separate rows, each with its own price and its own stock.
-    /// </summary>
+    /// <summary>A product on one shop's shelf, with its own price and stock.</summary>
     public class Medicine
     {
-        // The primary key. Cart, OrderItems, Reviews and Offers all point at it.
-        public int MedicineId { get; set; }
+        public int MedicineId { get; set; }              // PK; Cart, OrderItems, Reviews and Offers all point here
+        public int PharmacyId { get; set; }              // matched against UserSession.PharmacyId, so owners stay apart
+        public int CategoryId { get; set; }              // FK onto Categories; the id, so a rename is one UPDATE
+        public string MedicineName { get; set; } = "";   // the brand the customer searches for, such as Napa
+        public string GenericName { get; set; } = "";    // the ingredient, so a search finds every brand of one drug
+        public string Manufacturer { get; set; } = "";   // tells two identically named products apart
+        public string Strength { get; set; } = "";       // third column of UQ_Medicines_PerShop, so 500mg and 665mg coexist
+        public decimal UnitPrice { get; set; }           // decimal never double, because money must be exact
+        public int Stock { get; set; }                   // CK_Medicines_Stock forbids a negative, so overselling is refused
+        public int MinStock { get; set; }                // per product reorder line, since 'low' differs by product
+        public bool RequiresRx { get; set; }             // the one flag that makes checkout demand a prescription
+        public DateTime ExpiryDate { get; set; }         // the editor refuses a date that is not in the future
+        public string Description { get; set; } = "";    // nullable column, so empty string saves the null checks
+        public string ImagePath { get; set; } = "";      // a path, not the image, so the database stays small
+        public bool IsActive { get; set; } = true;       // soft delete: delisting keeps the row old orders still need
 
-        // The owning shop. This is the column every Admin side query filters on, matched
-        // against UserSession.PharmacyId, so it is the field that keeps one owner's
-        // inventory invisible to another owner.
-        public int PharmacyId { get; set; }
+        // The four below are joined in, so one grid query covers every column.
+        public string CategoryName { get; set; } = "";   // Categories.CategoryName, so no grid holds the whole list
+        public string PharmacyName { get; set; } = "";   // which shop is selling it, the heart of a marketplace listing
+        public string Area { get; set; } = "";           // Pharmacies.Area, what the customer filters the market by
+        public decimal DiscountPercent { get; set; }     // today's winning offer; 0 collapses the price below to UnitPrice
 
-        // Which category the medicine belongs to, a foreign key onto Categories. The id
-        // is stored rather than the name so a rename is one UPDATE in one place.
-        public int CategoryId { get; set; }
-
-        // The brand name the customer searches for, for example Napa.
-        public string MedicineName { get; set; } = "";
-
-        // The active ingredient, for example Paracetamol. Held separately so a search can
-        // find every brand of the same drug, which is the point of a marketplace.
-        public string GenericName { get; set; } = "";
-
-        // Who makes it. Shown on the details screen so the customer can tell two
-        // identically named products apart.
-        public string Manufacturer { get; set; } = "";
-
-        // Dosage such as 500mg. It is the third column of UQ_Medicines_PerShop
-        // (PharmacyId, MedicineName, Strength), which is what lets one shop list the
-        // 500mg and the 665mg versions of a brand as two rows without colliding.
-        public string Strength { get; set; } = "";
-
-        // The shelf price before any offer. decimal, never double, because money must be
-        // exact; CK_Medicines_Price keeps it above zero in the database.
-        public decimal UnitPrice { get; set; }
-
-        // Units currently on the shelf. CK_Medicines_Stock forbids a negative value, so
-        // an oversold basket is refused rather than quietly stored.
-        public int Stock { get; set; }
-
-        // The reorder threshold the owner sets per product. It exists so "low stock"
-        // means something different for a fast moving painkiller than for a rare item.
-        public int MinStock { get; set; }
-
-        // True when the law requires a doctor's prescription. This single flag is what
-        // makes the checkout demand an uploaded prescription before the order is placed.
-        public bool RequiresRx { get; set; }
-
-        // The expiry date on the pack. MedicineEditorForm refuses a date that is not in
-        // the future, which is the rule Validator.IsFutureDate enforces.
-        public DateTime ExpiryDate { get; set; }
-
-        // Free text shown on the details screen. Nullable in the database, so the empty
-        // string default keeps every caller free of null checks.
-        public string Description { get; set; } = "";
-
-        // Where the product photograph lives, stored as a path rather than as the image
-        // itself so the database stays small and the file can be replaced on disk.
-        public string ImagePath { get; set; } = "";
-
-        // The soft delete flag. Delisting sets it to false and keeps the row, because
-        // OrderItems and Reviews still refer to the medicine and those references must
-        // stay valid. Every customer facing query carries AND IsActive = 1.
-        public bool IsActive { get; set; } = true;
-
-        // filled by joins when a screen needs them
-        // None of the four below is a Medicines column. They are carried on the object so
-        // a grid can show the category, the shop, its area and today's discount without a
-        // second query per row, and they are simply empty when the query did not join.
-        public string CategoryName { get; set; } = "";
-        public string PharmacyName { get; set; } = "";
-        public string Area { get; set; } = "";
-        public decimal DiscountPercent { get; set; }
-
-        // COMPUTED PROPERTIES - abstraction, and the best OOP example in the models.
-        // Neither is stored in the database and neither has a setter: they are derived
-        // from fields already on the object, so a caller asks a question and never sees
-        // the arithmetic. => is expression-bodied syntax, evaluated fresh on every read,
-        // which means they can never fall out of step with UnitPrice or Stock.
-
-        // 100m is a DECIMAL literal, not 100. Using 100 would perform integer division
-        // in part of the expression and lose the fractional percentage.
-        // Rounded to 2dp here because money is displayed and stored to 2dp.
-        // MedicineDetailsForm prints this figure as the final price and subtracts it from
-        // UnitPrice to show the saving.
+        // ABSTRACTION: derived, never stored, no setter, so it cannot fall out of step.
         public decimal PriceAfterDiscount =>
+            // 100m is a decimal literal; plain 100 would divide as integers.
             decimal.Round(UnitPrice * (1 - DiscountPercent / 100m), 2);
 
-        // The same two-column comparison the low stock query makes in SQL, available on
-        // the object for any screen holding a Medicine rather than a DataTable.
+        // The same two-column test the low stock SQL makes, for code holding an object.
         public bool IsLowStock => Stock < MinStock;
     }
 }

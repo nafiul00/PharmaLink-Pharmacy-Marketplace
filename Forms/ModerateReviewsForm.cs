@@ -4,365 +4,243 @@ using System.Windows.Forms;         // Form, DataGridView, CheckBox, MessageBox
 using PharmaLinkApp.Helpers;        // UiTheme, the shared palette and control styles
 using PharmaLinkApp.Services;       // ReviewService, which owns the queue query and the hide update
 
-namespace PharmaLinkApp.Forms
+namespace PharmaLinkApp.Forms   // presentation only; there is no SQL in this file
 {
-    // -------------------------------------------------------------------------
-    //  Layer: presentation.  Opened by SuperAdminDashboard. Uses ReviewService
-    //  for the queue and for the single UPDATE this screen performs.
-    //
-    //  Flow:
-    //      Load -> ApplyTheme -> fill the rating filter -> _loading = false
-    //           -> LoadGrid
-    //      Hide / Unhide -> ReviewService.SetHidden -> LoadGrid
-    //
-    //  The only write on this form is UPDATE Reviews SET IsHidden. Nothing here
-    //  deletes a row, and that is the whole design: a hidden review stops
-    //  counting everywhere while remaining on record.
-    //
-    //  There is no SQL in this file.
-    // -------------------------------------------------------------------------
-
-    /// <summary>
-    /// Requirement 8. The moderation queue, filtered by default to one and two
-    /// star reviews, which is where abuse usually sits.
-    ///
-    /// Hide Review sets IsHidden to 1 rather than deleting the row, so the
-    /// review disappears from the customer screens and from every average rating
-    /// calculation while remaining available if the pharmacy disputes it.
-    /// </summary>
-    public partial class ModerateReviewsForm : Form
+    /// <summary>The moderation queue: hide a review, never delete it.</summary>
+    public partial class ModerateReviewsForm : Form   // requirement 8, opened by SuperAdminDashboard
     {
+        // The only write here is ReviewService.SetHidden; nothing deletes a row.
         private readonly ReviewService _reviews = new ReviewService();
-
-        // The re-entrancy guard. Setting cmbRating.SelectedIndex in code raises
-        // SelectedIndexChanged exactly as a click does, and that handler calls LoadGrid.
-        // Starting true means the assignment during Load is ignored and the grid is
-        // queried once, deliberately, at the end of Load.
+        // The re-entrancy guard: SelectedIndex in code raises the same event a click does.
         private bool _loading = true;
 
-        public ModerateReviewsForm()
+        public ModerateReviewsForm()   // no database work before the window exists
         {
-            InitializeComponent();
+            InitializeComponent();   // designer generated controls only
         }
 
-        private void ModerateReviewsForm_Load(object sender, EventArgs e)
+        private void ModerateReviewsForm_Load(object sender, EventArgs e)   // runs once, after the window exists
         {
-            ApplyTheme();
+            ApplyTheme();   // colours, fonts, grid styling and the CellFormatting hook up
 
-            // Three bands rather than a free numeric box, because moderation is about
-            // triage: the operator wants the worst reviews first, not an arbitrary cut off.
-            // The captions are what the operator reads; MaxRating() below turns the chosen
-            // index into the number the query actually filters on.
+            // Three bands rather than a free numeric box, because moderation is triage.
             cmbRating.Items.AddRange(new object[]
             {
-                "1 and 2 stars only  (default)",
-                "3 stars and below",
-                "All ratings"
+                "1 and 2 stars only  (default)",   // index 0, where abusive wording sits
+                "3 stars and below",               // index 1, everything that is not praise
+                "All ratings"                      // index 2, used when reviewing a past decision
             });
-            // Index 0 is the default because one and two star reviews are where abusive
-            // wording sits. Opening on "All ratings" would bury those in hundreds of
-            // ordinary five star entries that need no attention at all.
+            // Index 0 by default: opening on "All ratings" would bury the complaints.
             cmbRating.SelectedIndex = 0;
 
-            // Cleared only after the combo box is populated, so the change event it raised
-            // while filling has already been swallowed by the guard in LoadGrid.
-            _loading = false;
-            LoadGrid();
+            _loading = false;   // cleared only after the combo raised its change event
+            LoadGrid();         // one deliberate first load, now that everything is wired
         }
 
-        private void ApplyTheme()
+        private void ApplyTheme()   // pure presentation, called once from Load
         {
-            UiTheme.StyleForm(this, "Moderate Reviews");
+            UiTheme.StyleForm(this, "Moderate Reviews");   // window background and title bar text
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;                 // the brand green band
+            lblTitle.Font = UiTheme.FontTitle;                       // the page name, the largest text here
+            lblTitle.ForeColor = Color.White;                        // the only colour legible on the green band
+            lblSubtitle.Font = UiTheme.FontSmall;                    // the fixed one-line explanation
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);   // pale green, so it supports the title
 
-            UiTheme.StyleSecondary(btnBack);
-            UiTheme.StyleSecondary(btnRefresh);
-            UiTheme.StyleDanger(btnHide);
-            UiTheme.StyleSuccess(btnUnhide);
-            UiTheme.StyleGrid(dgvReviews);
-            dgvReviews.CellFormatting += dgvReviews_CellFormatting;
+            UiTheme.StyleSecondary(btnBack);      // grey: leaves the screen and changes nothing
+            UiTheme.StyleSecondary(btnRefresh);   // grey too: re-runs the same read
+            UiTheme.StyleDanger(btnHide);         // red, because hiding removes a review from view
+            UiTheme.StyleSuccess(btnUnhide);      // green, because restoring puts it back
+            UiTheme.StyleGrid(dgvReviews);        // shared grid styling, including Fill column sizing
+            dgvReviews.CellFormatting += dgvReviews_CellFormatting;   // what tints the rows by state
 
-            txtComment.BackColor = Color.White;
-            txtComment.Font = UiTheme.FontBody;
-            lblNote.Font = UiTheme.FontSmall;
-            lblNote.ForeColor = UiTheme.TextMuted;
-            lblStatus.Font = UiTheme.FontSmall;
-            lblStatus.ForeColor = UiTheme.TextMuted;
+            txtComment.BackColor = Color.White;      // white, so the full comment reads as text
+            txtComment.Font = UiTheme.FontBody;      // the body font, matching the grid
+            lblNote.Font = UiTheme.FontSmall;        // the standing note about hiding versus deleting
+            lblNote.ForeColor = UiTheme.TextMuted;   // grey, so guidance never reads as live feedback
+            lblStatus.Font = UiTheme.FontSmall;      // the outcome line LoadGrid and the buttons write to
+            lblStatus.ForeColor = UiTheme.TextMuted; // grey too: failures use a dialog instead
         }
 
-        private int MaxRating()
+        private int MaxRating()   // the one place that turns a caption into a number
         {
-            // The combo box holds captions, the query needs a number, and this is the one
-            // place that translates between them. Keeping the mapping in a method rather
-            // than parsing the caption text means the wording on screen can be changed
-            // without touching the filter, and a caption typo cannot alter what is queried.
+            // Keeping the mapping here lets the wording change without moving the filter.
             switch (cmbRating.SelectedIndex)
             {
                 case 0: return 2;     // "1 and 2 stars only"
                 case 1: return 3;     // "3 stars and below"
-                // 5 rather than a magic large number, because CK_Reviews_Rating limits
-                // Rating to 1 to 5, so "<= 5" genuinely means every review there can be.
+                // 5, not a magic large number: CK_Reviews_Rating limits Rating to 1 to 5.
                 default: return 5;    // "All ratings"
             }
         }
 
-        private void LoadGrid()
+        private void LoadGrid()   // every refresh path on this form comes through here
         {
-            // Both filter controls route here, so one guard covers them both.
-            if (_loading) return;
+            if (_loading) return;   // one guard covers both filter controls and Refresh
 
-            try
+            try   // the read and the rebind are one unit of work
             {
-                // Two arguments, two independent filters in the query:
-                //   Rating <= @MaxRating           picks the severity band, and
-                //   (@IncludeHidden = 1 OR IsHidden = 0)  decides whether reviews that
-                // have already been dealt with are shown. The default is unticked, so the
-                // queue holds only work still to do; ticking it is how a past decision is
-                // found again in order to reverse it.
+                // Two filters: the severity band, and whether rows already dealt with show.
                 DataTable table = _reviews.GetModerationQueue(MaxRating(), chkIncludeHidden.Checked);
-                dgvReviews.DataSource = table;
+                dgvReviews.DataSource = table;   // binding is what CREATES the columns below
 
-                // Columns exist only after DataSource is assigned, so the headers follow the
-                // bind. The guard covers a failed load, where indexing by name would throw.
-                if (dgvReviews.Columns.Count > 0)
+                if (dgvReviews.Columns.Count > 0)   // guards a failed load, where a name lookup throws
                 {
-                    dgvReviews.Columns["ReviewId"].HeaderText = "ID";
-                    // FillWeight is a proportion of the width, not pixels, because the grid
-                    // auto sizes to fill. The comment column is given far more than the rest.
-                    dgvReviews.Columns["ReviewId"].FillWeight = 30;
-                    // Reviewer is an alias for Users.FullName, joined in on Reviews.
-                    // CustomerId, so the operator can see who wrote a comment before acting.
+                    dgvReviews.Columns["ReviewId"].HeaderText = "ID";   // the key both buttons act on
+                    dgvReviews.Columns["ReviewId"].FillWeight = 30;     // a share of the width, not pixels
+                    // Reviewer is an alias for Users.FullName, joined on Reviews.CustomerId.
                     dgvReviews.Columns["Reviewer"].HeaderText = "Reviewer";
-                    dgvReviews.Columns["MedicineName"].HeaderText = "Medicine";
-                    // The pharmacy is reached by joining Medicines to Pharmacies, because a
-                    // review is written against a MEDICINE and only belongs to a shop
-                    // through it. That indirection is the same reason the low rated report
-                    // has to group back up to the pharmacy to get an average.
+                    dgvReviews.Columns["MedicineName"].HeaderText = "Medicine";   // what was reviewed
+                    // A review belongs to a shop only through its medicine, hence the extra join.
                     dgvReviews.Columns["PharmacyName"].HeaderText = "Pharmacy";
-                    dgvReviews.Columns["Rating"].HeaderText = "Stars";
-                    dgvReviews.Columns["Rating"].FillWeight = 32;
-                    dgvReviews.Columns["Comment"].HeaderText = "Comment";
-                    // 160 against a default of 100, so the text gets the most room in the
-                    // grid. The full comment is still shown in the box below, because a long
-                    // one is truncated in a cell and moderation depends on reading all of it.
-                    dgvReviews.Columns["Comment"].FillWeight = 160;
-                    dgvReviews.Columns["ReviewDate"].HeaderText = "Written on";
-                    // OrderId is shown because it is the proof the review is genuine: a
-                    // review can only be written against an order the customer actually
-                    // received, so this number is the audit trail back to that purchase.
+                    dgvReviews.Columns["Rating"].HeaderText = "Stars";   // the severity at a glance
+                    dgvReviews.Columns["Rating"].FillWeight = 32;        // a single digit needs almost no room
+                    dgvReviews.Columns["Comment"].HeaderText = "Comment";   // the text being moderated
+                    dgvReviews.Columns["Comment"].FillWeight = 160;         // the most room, against a default of 100
+                    dgvReviews.Columns["ReviewDate"].HeaderText = "Written on";   // when it was posted
+                    // The proof the review is genuine: it traces back to an order really received.
                     dgvReviews.Columns["OrderId"].HeaderText = "Order";
-                    dgvReviews.Columns["OrderId"].FillWeight = 40;
-                    dgvReviews.Columns["IsHidden"].HeaderText = "Hidden";
-                    dgvReviews.Columns["IsHidden"].FillWeight = 40;
+                    dgvReviews.Columns["OrderId"].FillWeight = 40;   // an order number is short
+                    dgvReviews.Columns["IsHidden"].HeaderText = "Hidden";   // which rows are already dealt with
+                    dgvReviews.Columns["IsHidden"].FillWeight = 40;         // a tick box needs little room
                     // Ticked when a pharmacy owner reported the review from Customer Reviews.
                     dgvReviews.Columns["IsReported"].HeaderText = "Reported";
-                    dgvReviews.Columns["IsReported"].FillWeight = 48;
+                    dgvReviews.Columns["IsReported"].FillWeight = 48;   // slightly wider, for the caption
                 }
 
-                // Reported reviews are counted separately, because each one is a pharmacy
-                // owner waiting on a decision.
+                // Counted separately, because each reported row is an owner awaiting a decision.
                 int reported = table.Select("IsReported = true").Length;
-                lblStatus.Text = table.Rows.Count + " review(s) in the queue" +
-                                 (reported > 0 ? ", " + reported + " reported by a pharmacy." : ".");
-                // Rebinding can leave a different row current, or none, so the comment box
-                // and the two buttons are recomputed rather than left as they were.
-                UpdateSelection();
+                lblStatus.Text = table.Rows.Count + " review(s) in the queue" +   // the plain row count
+                                 (reported > 0 ? ", " + reported + " reported by a pharmacy." : ".");   // and the reports
+                UpdateSelection();   // rebinding can leave a different row current, or none at all
             }
-            catch (Exception ex)
+            catch (Exception ex)   // the read can fail for a database reason
             {
                 // DbHelper has already turned any SqlException into a readable sentence.
                 MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void dgvReviews_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
+        private void dgvReviews_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)   // tints rows by state
         {
-            // RowIndex is -1 for the header row, which fires this event too, and the column
-            // test covers the gap between a failed load and the next successful bind.
+            // RowIndex is -1 for the header row, and the column test covers a failed load.
             if (e.RowIndex < 0 || dgvReviews.Columns.Count == 0) return;
 
-            DataGridViewRow row = dgvReviews.Rows[e.RowIndex];
-            // Both values are read once into locals rather than through the cell indexer
-            // three times, and both arrive as object because the grid is bound to a
-            // DataTable that knows nothing about bool or int at this level.
-            object hidden = row.Cells["IsHidden"].Value;
-            object rating = row.Cells["Rating"].Value;
+            DataGridViewRow row = dgvReviews.Rows[e.RowIndex];   // the row being painted right now
+            object hidden = row.Cells["IsHidden"].Value;   // object, because the grid is bound to a DataTable
+            object rating = row.Cells["Rating"].Value;     // read once into a local rather than indexed twice
 
-            // THE ORDER OF THESE THREE BRANCHES IS THE LOGIC.
-            // Hidden is tested first, so an already hidden one star review draws grey
-            // rather than red. Testing the rating first would paint it as outstanding work
-            // when it has in fact already been dealt with, which is precisely the mistake
-            // this screen exists to avoid.
-            //
-            // Both null and DBNull are tested before converting: Convert.ToBoolean(null) is
-            // defined to be false, but Convert.ToBoolean(DBNull.Value) throws, so the second
-            // test is the one that actually matters.
+            // ORDER IS THE LOGIC: hidden first, so a hidden 1 star row draws grey, not red.
             if (hidden != null && hidden != DBNull.Value && Convert.ToBoolean(hidden))
             {
-                // Grey on muted text reads as "switched off" rather than "urgent", which is
-                // exactly the status of a review that has already been hidden.
-                row.DefaultCellStyle.BackColor = Color.FromArgb(238, 238, 238);
-                row.DefaultCellStyle.ForeColor = UiTheme.TextMuted;
+                row.DefaultCellStyle.BackColor = Color.FromArgb(238, 238, 238);   // grey reads as "switched off"
+                row.DefaultCellStyle.ForeColor = UiTheme.TextMuted;   // muted text, matching that grey
             }
-            // Only reached when the review is still visible. Two stars and below is the same
-            // threshold the default filter uses, so the rows that matter most stay marked
-            // even when the operator has widened the filter to all ratings.
-            // A review a pharmacy reported is marked the same way, whatever its star rating.
+            // Still visible: two stars and below, or reported at any rating, is marked red.
             else if ((rating != null && rating != DBNull.Value && Convert.ToInt32(rating) <= 2) ||
-                     (row.Cells["IsReported"].Value is bool reported && reported))
+                     (row.Cells["IsReported"].Value is bool reported && reported))   // an owner flagged it
             {
-                row.DefaultCellStyle.BackColor = UiTheme.LowStockBack;
-                row.DefaultCellStyle.ForeColor = UiTheme.TextDark;
+                row.DefaultCellStyle.BackColor = UiTheme.LowStockBack;   // the red used for anything needing attention
+                row.DefaultCellStyle.ForeColor = UiTheme.TextDark;      // dark text, so the red stays readable
             }
-            else
+            else   // an ordinary visible review, three stars or above and unreported
             {
-                // The explicit reset is not redundant. Grid rows are recycled as the list
-                // scrolls, so a row that is left unpainted keeps the previous row's colours
-                // and grey or red would smear down the grid.
+                // Not redundant: rows are RECYCLED while scrolling, so unpainted keeps old paint.
                 row.DefaultCellStyle.BackColor = Color.White;
-                row.DefaultCellStyle.ForeColor = UiTheme.TextDark;
+                row.DefaultCellStyle.ForeColor = UiTheme.TextDark;   // back to the ordinary body colour
             }
         }
 
-        // One handler for the selection, because the comment box and the two buttons all
-        // depend on the same thing: which row is current.
+        // The comment box and both buttons depend on the same thing: which row is current.
         private void dgvReviews_SelectionChanged(object sender, EventArgs e) => UpdateSelection();
 
-        private void UpdateSelection()
+        private void UpdateSelection()   // recomputes the box and the two buttons together
         {
-            DataGridViewRow row = dgvReviews.CurrentRow;
+            DataGridViewRow row = dgvReviews.CurrentRow;   // null on an empty queue and mid rebind
 
-            // The empty case handled first and in full: an empty queue, or a grid mid
-            // rebind, must leave no stale comment on screen beside two live buttons.
-            if (row == null || row.Cells["ReviewId"].Value == null)
+            if (row == null || row.Cells["ReviewId"].Value == null)   // nothing selected to act on
             {
-                txtComment.Clear();
-                btnHide.Enabled = false;
-                btnUnhide.Enabled = false;
-                return;
+                txtComment.Clear();          // no stale comment left beside two live buttons
+                btnHide.Enabled = false;     // neither action can succeed without a row
+                btnUnhide.Enabled = false;   // so both are switched off together
+                return;                      // nothing else to compute
             }
 
-            // The comment is repeated in a full width box because a grid cell truncates it,
-            // and a moderation decision depends on reading the whole sentence.
+            // Repeated in a full width box, because a grid cell truncates the sentence.
             object comment = row.Cells["Comment"].Value;
-            // Comment is nullable in the schema, since a customer may rate without writing
-            // anything. The placeholder names what is absent rather than leaving an empty
-            // box, which would be indistinguishable from a control that failed to fill.
+            // Comment is nullable, so the placeholder names what is absent.
             txtComment.Text = comment == null || comment == DBNull.Value ? "(no written comment)" : comment.ToString();
 
-            // Only DBNull is tested here, unlike CellFormatting above, and that is
-            // sufficient: Convert.ToBoolean(null) is defined to return false, so a null
-            // would fall through to the same answer, whereas DBNull would throw.
+            // Only DBNull is tested here: Convert.ToBoolean(null) returns false anyway.
             bool hidden = row.Cells["IsHidden"].Value != DBNull.Value &&
-                          Convert.ToBoolean(row.Cells["IsHidden"].Value);
+                          Convert.ToBoolean(row.Cells["IsHidden"].Value);   // the row's own state
 
-            // Exactly one of the two is ever available, driven by the row's own state rather
-            // than by remembering what was last clicked. Hiding twice would be a no-op, and
-            // offering it would suggest the first attempt had not worked.
-            btnHide.Enabled = !hidden;
-            btnUnhide.Enabled = hidden;
+            // Exactly one is ever available, driven by the row rather than by memory.
+            btnHide.Enabled = !hidden;   // hiding twice would be a no-op that looks like a failure
+            btnUnhide.Enabled = hidden;  // and restoring is only offered on something hidden
         }
 
-        private void btnHide_Click(object sender, EventArgs e)
+        private void btnHide_Click(object sender, EventArgs e)   // the red button: IsHidden goes to 1
         {
-            // Read the current row at the moment of the click rather than caching it when
-            // the selection changed, so the action cannot apply to a row that has moved on.
+            // Read at the moment of the click, so the action cannot apply to a row that moved.
             DataGridViewRow row = dgvReviews.CurrentRow;
-            if (row == null) return;
+            if (row == null) return;   // re-checked even though the button is disabled without a row
 
-            // The id is what the update travels on. The pharmacy name is only used in the
-            // messages, so a stale caption cannot cause the wrong review to be hidden.
-            int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);
-            string pharmacy = row.Cells["PharmacyName"].Value.ToString();
+            int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);   // what the update travels on
+            string pharmacy = row.Cells["PharmacyName"].Value.ToString();  // used only in the messages
 
-            // The prompt states the mechanism, not just the intent, because the difference
-            // between hiding and deleting is the entire point of this screen and the
-            // operator should know the decision is reversible before they take it.
+            // The prompt states the MECHANISM: hiding rather than deleting is the point.
             DialogResult answer = MessageBox.Show(
-                "Hide this review from the customer screens?\r\n\r\n" +
-                "IsHidden is set to 1. The row is not deleted, so " + pharmacy +
-                "'s rating history stays complete and the decision can be reversed.",
-                "Hide review", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                "Hide this review from the customer screens?\r\n\r\n" +   // what the operator is choosing
+                "IsHidden is set to 1. The row is not deleted, so " + pharmacy +   // names the column and the shop
+                "'s rating history stays complete and the decision can be reversed.",   // and that it is reversible
+                "Hide review", MessageBoxButtons.YesNo, MessageBoxIcon.Question);   // a question, not a warning
 
-            // Testing against Yes rather than for No, so dismissing the dialog any other way
-            // also counts as a refusal.
+            // Tested against Yes, so dismissing the dialog any other way also refuses.
             if (answer != DialogResult.Yes) return;
 
-            // HIDE, never DELETE. SetHidden runs UPDATE Reviews SET IsHidden = 1, so the
-            // row survives. Every customer-facing query and every average-rating
-            // calculation carries "WHERE r.IsHidden = 0", which is why hiding one review
-            // silently changes the pharmacy's average on the low-rated report as well.
-            //
-            // Keeping the row matters twice over: the pharmacy can dispute the decision,
-            // and Reviews.OrderId is a foreign key to a real order, so deleting reviews
-            // would erase part of the audit trail that proves ratings are genuine.
-            //
-            // The soft delete is also what makes the effect reversible and measurable. A
-            // DELETE would take the rating out of the average identically, but it would
-            // take the evidence with it: nobody could afterwards show which review was
-            // removed, who wrote it, when, or against which order, and a shop whose average
-            // had risen overnight would have no way to be told why. IsHidden costs one bit
-            // per row and buys a complete record of every moderation decision ever taken.
-            //
-            // It is the same pattern as Medicines.IsActive and the suspension of a
-            // pharmacy: throughout this application a record with history behind it is
-            // deactivated rather than destroyed.
+            // HIDE, never DELETE: every average carries IsHidden = 0, and the row survives.
             if (!ApplyHidden(reviewId, true)) return;
-            // LoadGrid first, then the message: LoadGrid writes the row count into lblStatus,
-            // so a message set before it would be overwritten before anyone could read it.
+            // LoadGrid first, then the message: LoadGrid writes the row count into lblStatus.
             LoadGrid();   // re-query so the row redraws greyed out, or leaves the queue
-            lblStatus.Text = "Review " + reviewId + " hidden. It no longer counts towards " + pharmacy + "'s average rating.";
+            lblStatus.Text = "Review " + reviewId + " hidden. It no longer counts towards " + pharmacy + "'s average rating.";   // written after LoadGrid
         }
 
-        private void btnUnhide_Click(object sender, EventArgs e)
+        private void btnUnhide_Click(object sender, EventArgs e)   // the green button: IsHidden back to 0
         {
-            DataGridViewRow row = dgvReviews.CurrentRow;
-            if (row == null) return;
+            DataGridViewRow row = dgvReviews.CurrentRow;   // the same read-at-click-time rule
+            if (row == null) return;   // nothing selected, so there is nothing to restore
 
-            int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);
-            // The exact inverse, through the same method with false: IsHidden goes back to
-            // 0 and the review counts again everywhere it did before. No confirmation is
-            // asked for, because restoring a customer's own words is the harmless direction
-            // and it is undone by the button beside it. This only works at all because the
-            // hide never destroyed anything.
+            int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);   // the key the update travels on
+            // The exact inverse, and unconfirmed: restoring is the harmless direction.
             if (!ApplyHidden(reviewId, false)) return;
-            LoadGrid();
-            lblStatus.Text = "Review " + reviewId + " restored and is visible to customers again.";
+            LoadGrid();   // re-query, so the row loses its grey tint
+            lblStatus.Text = "Review " + reviewId + " restored and is visible to customers again.";   // and counting again
         }
 
-        // Runs the update for both buttons and reports failure, so neither button can show a
-        // success message for a write that did not happen.
+        // Runs the update for both buttons, so neither reports a write that failed.
         private bool ApplyHidden(int reviewId, bool hidden)
         {
-            try
+            try   // the one database write this form performs
             {
-                // SetHidden returns true only when exactly one row changed.
-                if (_reviews.SetHidden(reviewId, hidden)) return true;
+                if (_reviews.SetHidden(reviewId, hidden)) return true;   // true only when one row changed
 
-                MessageBox.Show("Review " + reviewId + " was not found. The list has been refreshed.",
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                LoadGrid();
-                return false;
+                MessageBox.Show("Review " + reviewId + " was not found. The list has been refreshed.",   // 0 rows
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);   // a warning, not an error
+                LoadGrid();     // re-read, so the grid stops showing a row that has gone
+                return false;   // the caller must not print a success message
             }
-            catch (Exception ex)
+            catch (Exception ex)   // the write can still fail for a database reason
             {
                 // DbHelper has already turned any SqlException into a readable sentence.
                 MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
+                return false;   // treated exactly like a refused write by both callers
             }
         }
 
-        // Both the rating combo box and the Include hidden tick box are wired here, and the
-        // Refresh button as well, because all three want the same thing: re-run the query
-        // with whatever the filters now hold.
+        // The combo, the Include hidden tick box and Refresh all want the same re-read.
         private void Filter_Changed(object sender, EventArgs e) => LoadGrid();
-        // Close, not Dispose: the dashboard opened this form inside a using block, so
-        // closing returns control there and the dashboard refreshes itself.
+        // Close, not Dispose: the dashboard opened this inside a using block.
         private void btnBack_Click(object sender, EventArgs e) => Close();
     }
 }

@@ -1,649 +1,387 @@
-using System.Data;                  // DataTable, DataRow and IsolationLevel, which lives in this namespace
+using System.Data;                  // DataTable, DataRow and IsolationLevel all live here
 using Microsoft.Data.SqlClient;     // SqlConnection, SqlTransaction and SqlCommand, used by Checkout
 using PharmaLinkApp.Database;       // DbHelper, the single place that knows the connection string
-using PharmaLinkApp.Models;         // Order and OrderItem, the typed objects the invoice is printed from
+using PharmaLinkApp.Models;         // Order and OrderItem, the objects the invoice is printed from
 
+// Beside CartService: checkout consumes what the cart built.
 namespace PharmaLinkApp.Services
 {
-    // -------------------------------------------------------------------------
-    //  Layer: service.  Called by CheckoutForm, CartForm, OrderHistoryForm,
-    //  InvoiceForm and AdminDashboard. Reads and writes through DbHelper.
-    //
-    //  Checkout() and Cancel() are the only methods that open their own
-    //  SqlConnection rather than using DbHelper's helpers, because both need one
-    //  explicit transaction spanning several statements while DbHelper opens and
-    //  closes a connection per call. A SqlException raised here therefore does
-    //  not pass through DbHelper.Describe(), which is why Program.ReportFatal
-    //  carries a second SqlException branch.
-    //
-    //  Every statement carries @PharmacyId, taken from UserSession.
-    // -------------------------------------------------------------------------
+    // Layer: service. Checkout and Cancel run their own explicit transaction.
 
-    /// <summary>
-    /// Checkout, order history, invoices and order status.
-    ///
-    /// Checkout is the most important piece of the system. Five things have to
-    /// happen together - the order header, one line per cart row, the stock
-    /// reduction, the cart clean up and the frozen commission - and if any one
-    /// of them failed on its own the database would be left with an order that
-    /// has no items, or stock that was sold twice. Wrapping them in a single
-    /// transaction is what makes the checkout safe.
-    /// </summary>
+    /// <summary>Checkout, order history, invoices and order status.</summary>
     public class OrderService
     {
         // One helper for every method that does not need a transaction of its own.
-        // DbHelper keeps no connection open between calls, so sharing it is safe.
         private readonly DbHelper _db = new DbHelper();
 
-        // =====================================================================
-        //  CHECKOUT  (requirement 25)
-        // =====================================================================
+        // == checkout (requirement 25) ==
 
-        /// <summary>
-        /// Places one order for one pharmacy's slice of the basket. A cart that
-        /// spans two pharmacies is checked out by calling this once per
-        /// pharmacy, which is why every statement below carries @PharmacyId.
-        /// Returns the new OrderId, or 0 when the order could not be placed.
-        /// </summary>
+        /// <summary>Places one order for one pharmacy's slice of the basket.</summary>
         public int Checkout(int customerId, int pharmacyId, string deliveryAddress,
-                            string paymentMethod, decimal deliveryCharge, out string message)
+                            string paymentMethod, decimal deliveryCharge, out string message)   // out, not an exception: a sold-out basket is the customer's to fix
         {
-            // This method opens its OWN connection instead of using DbHelper's helpers,
-            // because all five statements below must share one transaction and DbHelper
-            // deliberately opens and closes a connection per call.
+            // Its own connection, because all five statements share one transaction.
             using (SqlConnection conn = _db.GetConnection())
             {
-                // Opened by hand here, unlike ExecuteTable where the data adapter does it:
-                // a transaction cannot be started on a connection that is still closed.
+                // Opened by hand: a transaction cannot start on a closed connection.
                 conn.Open();
-                // Serializable is the strictest isolation level: it takes range locks, so
-                // no other checkout can read or change the stock rows this transaction is
-                // working with until it commits. That is what makes the stock re-check
-                // below trustworthy rather than merely hopeful.
-                // The default, ReadCommitted, would release its read lock the instant the
-                // check finished, leaving a gap in which another customer could take the
-                // last unit before the UPDATE ran. The price of Serializable is that two
-                // simultaneous checkouts may block or deadlock; the catch at the bottom
-                // turns that into a message asking the customer to try again, which is a
-                // far better outcome than selling stock that is not there.
+                // Serializable: stops another checkout taking the last unit mid-transaction.
                 using (SqlTransaction tx = conn.BeginTransaction(IsolationLevel.Serializable))
                 {
-                    try
+                    try   // stock check to commit, so any failure lands on one rollback
                     {
-                        // ---- 1. re-check the stock inside the transaction ----
-                        // Two customers can reach the checkout for the last unit
-                        // of a medicine at the same time. Checking again here,
-                        // rather than trusting what the cart screen showed, is
-                        // what stops the same unit being sold twice.
+                        // 1. Re-check stock INSIDE the transaction, not on the cart screen.
                         const string stockCheck = @"
--- TOP 1 because the question is 'is anything wrong', not 'how many things are wrong'.
--- The name is selected rather than a COUNT so the refusal message can say which
--- medicine caused it instead of a vague apology.
-SELECT TOP 1 m.MedicineName
-FROM   Cart ct
-       INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId
-WHERE  ct.CustomerId = @CustomerId
-  -- Only this shop's slice of the basket. The rest of the cart belongs to a different
-  -- order and must not be able to block this one.
-  AND  m.PharmacyId  = @PharmacyId
-  -- Two ways a line can be unsellable, tested together: the shelf no longer holds
-  -- enough units, or the pharmacy has delisted the medicine since it was added.
+SELECT TOP 1 m.MedicineName   -- the name, not a COUNT, so the refusal can say which medicine
+FROM   Cart ct   -- the basket drives it: a medicine nobody asked for cannot block a checkout
+       INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId   -- Medicines carries Stock and IsActive
+WHERE  ct.CustomerId = @CustomerId   -- this customer's basket only
+  AND  m.PharmacyId  = @PharmacyId   -- and only this shop's slice of it
+-- Two ways a line is unsellable: too few units, or the medicine was delisted.
   AND  (ct.Quantity > m.Stock OR m.IsActive = 0);";
 
-                        // Declared outside the using so it still exists after the command
-                        // has been disposed, which is where the decision is made.
-                        string problem;
-                        // Every command in this transaction must be told which transaction
-                        // it belongs to - that is the third constructor argument, tx.
-                        // Leaving it out throws, because the connection has an open
-                        // transaction that the command is not enlisted in.
+                        string problem;   // declared outside the using, so it survives the command
+                        // Every command must be told its transaction - the third argument, tx.
                         using (SqlCommand cmd = new SqlCommand(stockCheck, conn, tx))
                         {
-                            // The same two values the SQL filters on. Parameters, not
-                            // concatenation, exactly as everywhere else in the project.
-                            cmd.Parameters.AddWithValue("@CustomerId", customerId);
-                            cmd.Parameters.AddWithValue("@PharmacyId", pharmacyId);
-
-                            // ExecuteScalar returns the first column of the first row, or
-                            // null when the query found nothing. Here "found nothing" is
-                            // the GOOD outcome: no offending medicine means every line is
-                            // still in stock and still on sale.
-                            object result = cmd.ExecuteScalar();
-                            // Both cases are tested: null means no row came back at all,
-                            // DBNull would mean a row whose value was NULL. They are
-                            // different things in ADO.NET and only the pair covers both.
+                            cmd.Parameters.AddWithValue("@CustomerId", customerId);   // parameters, not concatenation, as everywhere else
+                            cmd.Parameters.AddWithValue("@PharmacyId", pharmacyId);   // the slice of the basket this one order covers
+                            object result = cmd.ExecuteScalar();   // null here is the GOOD outcome: nothing is out of stock
+                            // null and DBNull are different things in ADO.NET, so both are tested.
                             problem = result == null || result == DBNull.Value ? null : result.ToString();
                         }
 
-                        if (problem != null)
+                        if (problem != null)   // non-null means the query named a medicine
                         {
-                            // Something sold out, or was delisted, between adding it to the
-                            // cart and pressing Confirm. Roll back before anything is
-                            // written and hand the medicine's name back so the message can
-                            // name it rather than saying "something went wrong".
-                            // Rolling back explicitly rather than just returning releases
-                            // the Serializable range locks at once instead of holding them
-                            // until the using block disposes.
+                            // Roll back before anything is written; it also frees the range locks.
                             tx.Rollback();
-                            message = "'" + problem + "' is no longer available in the quantity you asked for. " +
-                                      "Please update your cart and try again.";
+                            message = "'" + problem + "' is no longer available in the quantity you asked for. " +   // names the line the customer must edit
+                                      "Please update your cart and try again.";   // ends on the action, because the basket is still there
                             return 0;      // 0 is the "no order was created" signal to the form
                         }
 
-                        // ---- 2. the order header, commission frozen at today's rate ----
+                        // 2. The order header, with the commission frozen at today's rate.
                         const string placeOrder = @"
--- Three local variables, so the total and the commission rate are each computed once
--- and then reused. Recomputing the total for the INSERT would mean running the same
--- aggregate twice and trusting the two runs to agree.
+-- Three locals, so the total and the rate are each computed once and then reused.
 DECLARE @Total DECIMAL(12,2), @CommRate DECIMAL(5,2), @NewOrderId INT;
 
--- Work out what this half of the basket costs, with today's discount already applied.
--- OUTER APPLY runs the little offer lookup once per cart line and, being OUTER, keeps
--- the line even when no offer exists (d.Pct is then NULL, which ISNULL turns into 0).
--- MAX() is used because a medicine could legitimately have more than one offer running,
--- and the customer should get the best of them.
--- Computing the total HERE, in the same transaction, rather than trusting a number the
--- form calculated, means the price cannot drift between the screen and the database.
--- 100.0 rather than 100 forces decimal division; integer division would floor every
--- percentage to zero and quietly charge the full price on every discounted line.
+-- Priced HERE, in the transaction, so it cannot drift from what the form showed.
 SELECT  @Total = CAST(SUM(ct.Quantity * m.UnitPrice * (1 - ISNULL(d.Pct,0)/100.0)) AS DECIMAL(12,2))
-FROM    Cart ct
-        INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId
-        OUTER APPLY (SELECT MAX(o.DiscountPercent) AS Pct
-                     FROM   Offers o
-                     WHERE  o.MedicineId = m.MedicineId AND o.IsActive = 1
-                       -- The date window is part of the lookup, so an offer that ended
-                       -- yesterday cannot be picked up by a checkout running today.
-                       AND  CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate) d
-WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;
+FROM    Cart ct   -- the rows just verified as sellable, and the ones the DELETE will remove
+        INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId   -- UnitPrice lives on Medicines
+        OUTER APPLY (SELECT MAX(o.DiscountPercent) AS Pct   -- MAX, so the customer gets the best offer
+                     FROM   Offers o   -- read, never written: a discount is not consumed
+                     WHERE  o.MedicineId = m.MedicineId AND o.IsActive = 1   -- an offer can be switched off by hand
+                       AND  CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate) d   -- and must be inside its dates
+WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;   -- this customer, this shop only
 
--- Read the shop's commission rate as it stands RIGHT NOW.
-SELECT  @CommRate = CommissionRate FROM Pharmacies WHERE PharmacyId = @PharmacyId;
+SELECT  @CommRate = CommissionRate FROM Pharmacies WHERE PharmacyId = @PharmacyId;   -- the rate as it stands right now
 
--- The order header. CommissionAmount is calculated once, here, and STORED - it is not a
--- computed column and nothing ever recalculates it. That is what lets the Super Admin
--- change a shop's rate next month without rewriting what was owed on this order.
--- TotalAmount is absent from the column list on purpose: it IS a computed column
--- (ItemsTotal + DeliveryCharge), so SQL Server refuses an explicit value for it.
--- Status is the literal 'Placed' rather than a parameter, because a new order has only
--- one legal starting state and CK_Orders_Status would refuse anything else.
+-- TotalAmount is omitted: a computed column refuses an explicit value.
 INSERT INTO Orders (CustomerId, PharmacyId, ItemsTotal, DeliveryCharge, CommissionAmount,
-                    DeliveryAddress, PaymentMethod, Status)
-VALUES (@CustomerId, @PharmacyId, @Total, @DeliveryCharge,
-        -- The frozen commission: today's rate applied to today's total, rounded once and
-        -- written down. DECIMAL throughout, never FLOAT, so money never drifts by a paisa.
-        CAST(@Total * @CommRate / 100.0 AS DECIMAL(12,2)),
-        @DeliveryAddress, @PaymentMethod, 'Placed');
+                    DeliveryAddress, PaymentMethod, Status)   -- address and method are copied onto the order
+VALUES (@CustomerId, @PharmacyId, @Total, @DeliveryCharge,   -- values line up with the column list above
+        CAST(@Total * @CommRate / 100.0 AS DECIMAL(12,2)),   -- the commission is FROZEN here, never recomputed
+        @DeliveryAddress, @PaymentMethod, 'Placed');   -- 'Placed' is a literal: a new order has one legal state
 
--- SCOPE_IDENTITY(), not @@IDENTITY: it returns the id generated by THIS statement in
--- this scope, so a trigger inserting elsewhere could never hand back the wrong number.
--- Orders starts at 1001, so the first invoice is 1001 rather than 1.
+-- SCOPE_IDENTITY(), not @@IDENTITY, so a trigger cannot hand back its own id.
 SET @NewOrderId = SCOPE_IDENTITY();
 
--- one line per cart row, at the discounted price the customer actually saw
--- INSERT ... SELECT rather than a loop in C#: one statement, one round trip, and every
--- line lands or none of them does. Subtotal is left out because OrderItems computes it
--- as Quantity * UnitPrice, so a line total can never contradict its own parts.
--- The price is copied ONTO the order on purpose. Reading it back from Medicines later
--- would reprice old invoices every time a pharmacy edited its catalogue.
-INSERT INTO OrderItems (OrderId, MedicineId, Quantity, UnitPrice)
-SELECT  @NewOrderId, ct.MedicineId, ct.Quantity,
-        CAST(m.UnitPrice * (1 - ISNULL(d.Pct,0)/100.0) AS DECIMAL(10,2))
-FROM    Cart ct
-        INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId
-        -- The same offer lookup as the total above, word for word, so the sum of the
-        -- lines and the header's ItemsTotal are arrived at by identical arithmetic.
-        OUTER APPLY (SELECT MAX(o.DiscountPercent) AS Pct
-                     FROM   Offers o
-                     WHERE  o.MedicineId = m.MedicineId AND o.IsActive = 1
-                       AND  CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate) d
-WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;
+-- One line per cart row, at the discounted price the customer actually saw.
+INSERT INTO OrderItems (OrderId, MedicineId, Quantity, UnitPrice)   -- Subtotal is computed by the table
+SELECT  @NewOrderId, ct.MedicineId, ct.Quantity,   -- the same id on every row ties the lines to the header
+        CAST(m.UnitPrice * (1 - ISNULL(d.Pct,0)/100.0) AS DECIMAL(10,2))   -- price copied ONTO the order, so old invoices never reprice
+FROM    Cart ct   -- the second read of Cart, which is why the DELETE has to come last
+        INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId   -- the catalogue again, for the price
+        OUTER APPLY (SELECT MAX(o.DiscountPercent) AS Pct   -- word for word the same offer lookup as the total
+                     FROM   Offers o   -- edit this block and the one above together, or they stop agreeing
+                     WHERE  o.MedicineId = m.MedicineId AND o.IsActive = 1   -- same two guards as before
+                       AND  CAST(GETDATE() AS DATE) BETWEEN o.StartDate AND o.EndDate) d   -- today inside the window
+WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;   -- exactly the lines priced into the header
 
--- take the stock off the shelf
--- One set based UPDATE, not a statement per line. UQ_Cart_Line makes (CustomerId,
--- MedicineId) unique, so the join matches each medicine exactly once and no quantity
--- can be deducted twice. The Serializable locks taken by the check above are still held
--- here, which is what guarantees the numbers have not moved since they were verified.
-UPDATE  m SET m.Stock = m.Stock - ct.Quantity
-FROM    Medicines m INNER JOIN Cart ct ON ct.MedicineId = m.MedicineId
-WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;
+-- One set-based UPDATE: UQ_Cart_Line makes the join match each medicine once.
+UPDATE  m SET m.Stock = m.Stock - ct.Quantity   -- take the stock off the shelf
+FROM    Medicines m INNER JOIN Cart ct ON ct.MedicineId = m.MedicineId   -- Medicines is written, Cart supplies amounts
+WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;   -- the units removed match the units sold
 
--- clear only this pharmacy's lines; the rest of the basket becomes the next order
--- This statement is LAST for a reason: it destroys the Cart rows that the two
--- statements above read. Moving it earlier would leave the order with no items and the
--- stock untouched, and neither failure would raise an error.
-DELETE  ct
-FROM    Cart ct INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId
-WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;
+-- Cart DELETE must be last - the INSERT and UPDATE above read these rows.
+DELETE  ct   -- 'ct' after DELETE, so no row of Medicines is touched
+FROM    Cart ct INNER JOIN Medicines m ON m.MedicineId = ct.MedicineId   -- joined only to reach PharmacyId
+WHERE   ct.CustomerId = @CustomerId AND m.PharmacyId = @PharmacyId;   -- the other shop's lines become the next order
 
--- The last statement in the batch, so this is what ExecuteScalar picks up: the new
--- order number, which the form uses to open the invoice.
+-- The last statement of the batch, so this is what ExecuteScalar picks up.
 SELECT CAST(@NewOrderId AS INT);";
 
-                        // Declared before the using so the value survives the block.
-                        int newOrderId;
-                        using (SqlCommand cmd = new SqlCommand(placeOrder, conn, tx))
+                        int newOrderId;   // declared before the using, so the value survives the block
+                        using (SqlCommand cmd = new SqlCommand(placeOrder, conn, tx))   // tx again: every command must be enlisted
                         {
-                            // Five parameters shared by every statement in the batch. Sending
-                            // the whole thing as one command means one round trip and, more
-                            // importantly, one set of values that every statement agrees on.
-                            cmd.Parameters.AddWithValue("@CustomerId", customerId);
-                            // The isolation column. It appears in all five statements, which
-                            // is what splits a two-pharmacy basket into two separate orders.
-                            cmd.Parameters.AddWithValue("@PharmacyId", pharmacyId);
-                            // decimal in C# maps to DECIMAL in SQL Server, so the delivery
-                            // charge arrives with its exact value rather than a float's
-                            // nearest approximation.
-                            cmd.Parameters.AddWithValue("@DeliveryCharge", deliveryCharge);
-                            // Copied onto the order rather than read from the customer's
-                            // profile later, so moving house does not rewrite where last
-                            // month's parcel was actually sent.
-                            cmd.Parameters.AddWithValue("@DeliveryAddress", deliveryAddress);
-                            // CK_Orders_Payment restricts this to CashOnDelivery, bKash,
-                            // Nagad or Card, so an unexpected value is refused by the
-                            // database rather than silently stored.
-                            cmd.Parameters.AddWithValue("@PaymentMethod", paymentMethod);
-                            // ExecuteScalar reads the final SELECT of the batch. Convert
-                            // unboxes it, because ExecuteScalar is typed as object.
-                            newOrderId = Convert.ToInt32(cmd.ExecuteScalar());
+                            cmd.Parameters.AddWithValue("@CustomerId", customerId);   // five parameters shared by every statement
+                            cmd.Parameters.AddWithValue("@PharmacyId", pharmacyId);   // the isolation column that splits a two-shop basket
+                            cmd.Parameters.AddWithValue("@DeliveryCharge", deliveryCharge);   // decimal to DECIMAL, so money arrives exact
+                            cmd.Parameters.AddWithValue("@DeliveryAddress", deliveryAddress);   // copied on, so moving house does not rewrite old parcels
+                            cmd.Parameters.AddWithValue("@PaymentMethod", paymentMethod);   // CK_Orders_Payment refuses anything but four known words
+                            newOrderId = Convert.ToInt32(cmd.ExecuteScalar());   // reads the final SELECT of the batch, boxed as object
                         }
 
-                        // Nothing above this line is durable. The commit is the single
-                        // instant at which the order, its lines, the reduced stock and the
-                        // emptied cart all become visible to everyone else at once.
+                        // Nothing above this line is durable; the commit makes it visible at once.
                         tx.Commit();
-                        message = "Order placed.";
-                        // A non-zero id is the success signal; the form opens the invoice.
-                        return newOrderId;
+                        message = "Order placed.";   // short on purpose: the invoice that opens next carries the detail
+                        return newOrderId;   // a non-zero id is the success signal, and the form opens the invoice
                     }
-                    catch (Exception ex)
+                    catch (Exception ex)   // not just SqlException: a deadlock and a dropped connection end the same way
                     {
-                        // Catching Exception rather than SqlException on purpose: a deadlock
-                        // victim, a constraint violation and a dropped connection must all
-                        // end the same way, with nothing written and a message the customer
-                        // can act on.
-                        // The rollback is itself wrapped, because it throws if the
-                        // transaction is already doomed or the connection has gone. An
-                        // exception escaping from in here would replace the real failure
-                        // with a misleading one, so it is deliberately ignored.
+                        // Wrapped, because Rollback itself throws on a doomed transaction.
                         try { tx.Rollback(); } catch { /* connection already gone */ }
-                        // The failure is reported through the out parameter rather than
-                        // rethrown, because this method's contract with the form is an id
-                        // plus a message. Since the command bypassed DbHelper, ex.Message is
-                        // SQL Server's own wording rather than a translated sentence.
+                        // Reported through out, not rethrown, and the wording is SQL Server's own.
                         message = "The order could not be placed: " + ex.Message;
-                        return 0;      // same "nothing was created" signal as the stock refusal
+                        return 0;      // the same "nothing was created" signal as the stock refusal
                     }
                 }
             }
         }
 
-        // =====================================================================
-        //  ORDER HISTORY  (requirement 27)
-        // =====================================================================
+        // == order history (requirement 27) ==
 
-        /// <summary>
-        /// The customer's own orders, with the number of line items, the invoice
-        /// total from the computed TotalAmount column, and a CanReview flag that
-        /// the Rate and Review button binds to.
-        /// </summary>
+        /// <summary>The customer's own orders, with a CanReview flag for each.</summary>
         public DataTable GetHistoryForCustomer(int customerId, string status, int pharmacyId,
-                                               DateTime fromDate, DateTime toDate)
+                                               DateTime fromDate, DateTime toDate)   // five filters, one query
         {
+            // const, so the filters vary through parameters and never through the text.
             const string sql = @"
-SELECT  o.OrderId, o.OrderDate, ph.PharmacyName,
-        -- One row per order in the grid, so the lines are counted rather than listed.
-        -- Counting the junction table's key is what the GROUP BY below exists for.
-        COUNT(oi.OrderItemId)      AS Items,
-        -- TotalAmount is the PERSISTED computed column (ItemsTotal + DeliveryCharge).
-        -- Reading it instead of adding the two in C# means the grid and the printed
-        -- invoice can never show different totals.
-        o.ItemsTotal, o.DeliveryCharge, o.TotalAmount,
-        o.PaymentMethod, o.Status,
-        -- CanReview: 1 only when the order has been delivered AND at least one medicine
-        -- on it has not been reviewed yet. Two conditions, because a review is proof of
-        -- a real purchase and because the same order must not be reviewable twice.
-        CASE WHEN o.Status = 'Delivered'
-              -- The outer EXISTS walks the order's items...
-              AND EXISTS (SELECT 1 FROM OrderItems x
-                          WHERE x.OrderId = o.OrderId
-                            -- ...and the inner NOT EXISTS keeps only those with no review
-                            -- row for this order and this medicine. Correlated on both
-                            -- columns, so reviewing the same medicine on a DIFFERENT order
-                            -- does not silently disable the button here.
-                            AND NOT EXISTS (SELECT 1 FROM Reviews r
-                                            WHERE r.OrderId = o.OrderId
-                                              AND r.MedicineId = x.MedicineId))
-             -- 1 and 0 rather than true and false, because SQL Server has no BOOLEAN type
-             -- to return and an int binds cleanly to the grid column.
-             THEN 1 ELSE 0 END     AS CanReview
-FROM    Orders o
-        INNER JOIN Pharmacies ph ON ph.PharmacyId = o.PharmacyId
-        -- INNER, which would drop an order that had no lines at all. Checkout writes the
-        -- header and the lines in one transaction, so such an order cannot exist.
-        INNER JOIN OrderItems oi ON oi.OrderId    = o.OrderId
--- The customer's OWN orders only. This is the line that stops one person reading
--- another's purchase history by changing a number.
-WHERE   o.CustomerId = @CustomerId
-  -- The optional filter pattern: an empty string, or 0 for the pharmacy, means 'no
-  -- filter' and the OR short circuits the comparison. One query serves every
-  -- combination of the three boxes on the form.
-  AND   (@Status     = '' OR o.Status = @Status)
-  AND   (@PharmacyId = 0  OR o.PharmacyId = @PharmacyId)
-  AND   o.OrderDate BETWEEN @FromDate AND @ToDate
--- Every non-aggregated column has to be listed here; only COUNT() is aggregated.
-GROUP BY o.OrderId, o.OrderDate, ph.PharmacyName, o.ItemsTotal, o.DeliveryCharge,
-         o.TotalAmount, o.PaymentMethod, o.Status
--- Newest first, which is the order a customer looks for their last purchase in.
+SELECT  o.OrderId, o.OrderDate, ph.PharmacyName,   -- which order, when, and from which shop
+        COUNT(oi.OrderItemId)      AS Items,   -- one row per order, so the lines are counted
+        o.ItemsTotal, o.DeliveryCharge, o.TotalAmount,   -- TotalAmount is the persisted computed column
+        o.PaymentMethod, o.Status,   -- plain text, so the grid needs no lookup table
+        CASE WHEN o.Status = 'Delivered'   -- CanReview: delivered AND something still unreviewed
+              AND EXISTS (SELECT 1 FROM OrderItems x   -- the outer EXISTS walks this order's lines
+                          WHERE x.OrderId = o.OrderId   -- correlated, so only this order counts
+                            AND NOT EXISTS (SELECT 1 FROM Reviews r   -- keep only lines with no review yet
+                                            WHERE r.OrderId = o.OrderId   -- the same order...
+                                              AND r.MedicineId = x.MedicineId))   -- ...and the same medicine on it
+             THEN 1 ELSE 0 END     AS CanReview   -- 1 and 0, because SQL Server has no BOOLEAN to return
+FROM    Orders o   -- Orders drives the query; the joins only decorate it
+        INNER JOIN Pharmacies ph ON ph.PharmacyId = o.PharmacyId   -- the shop's name, not just its id
+        INNER JOIN OrderItems oi ON oi.OrderId    = o.OrderId   -- INNER is safe: header and lines are written together
+WHERE   o.CustomerId = @CustomerId   -- the line that stops one person reading another's history
+  AND   (@Status     = '' OR o.Status = @Status)   -- '' means no filter, so one query serves every tab
+  AND   (@PharmacyId = 0  OR o.PharmacyId = @PharmacyId)   -- 0 is safe: identity columns start at 1
+  AND   o.OrderDate BETWEEN @FromDate AND @ToDate   -- BETWEEN is inclusive, which the C# below relies on
+GROUP BY o.OrderId, o.OrderDate, ph.PharmacyName, o.ItemsTotal, o.DeliveryCharge,   -- every non-aggregated column
+         o.TotalAmount, o.PaymentMethod, o.Status   -- leaving one out is a compile error, not a wrong answer
+-- Newest first, which is where a customer looks for their last purchase.
 ORDER BY o.OrderDate DESC;";
 
-            return _db.ExecuteTable(sql,
-                DbHelper.P("@CustomerId", customerId),
-                // ?? "" so a null from the form means 'no filter'. A NULL parameter would
-                // make @Status = '' evaluate to UNKNOWN and return an empty grid instead.
-                DbHelper.P("@Status", status ?? ""),
-                DbHelper.P("@PharmacyId", pharmacyId),
-                // .Date strips the time, so the range starts at midnight on the chosen day
-                // rather than at whatever moment the date picker happened to carry.
-                DbHelper.P("@FromDate", fromDate.Date),
-                // The end of the chosen day, not its start. BETWEEN is inclusive of both
-                // ends, so passing toDate.Date would cut the range at midnight and every
-                // order placed during the final day would silently vanish from the grid.
-                // OrderDate is DATETIME2(0), which stores whole seconds, so 23:59:59 is the
-                // last instant that day can hold.
+            return _db.ExecuteTable(sql,   // a grid-bound read, so an empty history returns an empty table
+                DbHelper.P("@CustomerId", customerId),   // from UserSession, never from the screen
+                DbHelper.P("@Status", status ?? ""),   // ?? "" because a NULL parameter would match nothing
+                DbHelper.P("@PharmacyId", pharmacyId),   // 0 is the form's "All pharmacies" entry
+                DbHelper.P("@FromDate", fromDate.Date),   // .Date, so the range starts at midnight
+                // The END of the chosen day: toDate.Date would cut the range at midnight.
                 DbHelper.P("@ToDate", toDate.Date.AddDays(1).AddSeconds(-1)));
         }
 
         /// <summary>Everything the printable invoice needs, in one object.</summary>
         public Order GetOrderWithItems(int orderId)
         {
+            // Two queries: the header here, the lines further down.
             const string header = @"
-SELECT  o.OrderId, o.CustomerId, o.PharmacyId, o.OrderDate, o.ItemsTotal,
-        -- CommissionAmount is read as it was frozen at checkout, never recomputed from
-        -- the pharmacy's current rate, so a reprinted invoice matches the original.
-        o.DeliveryCharge, o.TotalAmount, o.CommissionAmount, o.DeliveryAddress,
-        o.PaymentMethod, o.Status,
-        -- Aliased because Users and Pharmacies both carry names and contact columns;
-        -- without the aliases the DataTable would end up with two columns called the
-        -- same thing and the reader below could pick the wrong one.
-        u.FullName AS CustomerName, u.Phone AS CustomerPhone,
-        ph.PharmacyName, ph.Address AS PharmacyAddress, ph.LicenseNo AS PharmacyLicense
-FROM    Orders o
-        -- INNER on both sides: an order cannot exist without its customer or its
-        -- pharmacy, because FK_Orders_Customer and FK_Orders_Pharmacy say so.
-        INNER JOIN Users u       ON u.UserId       = o.CustomerId
-        INNER JOIN Pharmacies ph ON ph.PharmacyId  = o.PharmacyId
+SELECT  o.OrderId, o.CustomerId, o.PharmacyId, o.OrderDate, o.ItemsTotal,   -- ids carried through for a re-check
+        o.DeliveryCharge, o.TotalAmount, o.CommissionAmount, o.DeliveryAddress,   -- commission as frozen, never recomputed
+        o.PaymentMethod, o.Status,   -- both printed: how it was paid, and where it has got to
+        u.FullName AS CustomerName, u.Phone AS CustomerPhone,   -- aliased, because Pharmacies has names too
+        ph.PharmacyName, ph.Address AS PharmacyAddress, ph.LicenseNo AS PharmacyLicense   -- the licensed dispenser
+FROM    Orders o   -- one row, since OrderId is the primary key
+        INNER JOIN Users u       ON u.UserId       = o.CustomerId   -- an order cannot exist without its customer
+        INNER JOIN Pharmacies ph ON ph.PharmacyId  = o.PharmacyId   -- nor without its pharmacy
+-- Ownership is checked separately by OrderBelongsToCustomer, not here.
 WHERE   o.OrderId = @OrderId;";
 
-            DataTable table = _db.ExecuteTable(header, DbHelper.P("@OrderId", orderId));
-            // null means 'no such order', which the caller shows as a message. Returning an
-            // empty Order instead would print a blank invoice and look like a real one.
+            DataTable table = _db.ExecuteTable(header, DbHelper.P("@OrderId", orderId));   // one round trip for the header
+            // null means "no such order"; an empty Order would print a blank invoice.
             if (table.Rows.Count == 0) return null;
 
             DataRow row = table.Rows[0];      // OrderId is the primary key, so at most one
-            Order order = new Order
+            Order order = new Order   // an object initialiser, so every property is set in one expression
             {
-                OrderId = DbHelper.GetInt(row, "OrderId"),
-                CustomerId = DbHelper.GetInt(row, "CustomerId"),
-                PharmacyId = DbHelper.GetInt(row, "PharmacyId"),
-                OrderDate = DbHelper.GetDate(row, "OrderDate"),
-                // Every money column comes back as decimal through GetDecimal, which turns
-                // DBNull into 0m, so a missing value prints as 0.00 rather than throwing
-                // in the middle of building an invoice.
+                OrderId = DbHelper.GetInt(row, "OrderId"),   // the invoice number the customer quotes back
+                CustomerId = DbHelper.GetInt(row, "CustomerId"),   // kept so the caller can re-verify the owner
+                PharmacyId = DbHelper.GetInt(row, "PharmacyId"),   // which shop owes the commission below
+                OrderDate = DbHelper.GetDate(row, "OrderDate"),   // a NULL becomes an obviously wrong MinValue
+                // Every money column arrives through GetDecimal, which turns DBNull into 0m.
                 ItemsTotal = DbHelper.GetDecimal(row, "ItemsTotal"),
-                DeliveryCharge = DbHelper.GetDecimal(row, "DeliveryCharge"),
-                // The stored computed column, copied as-is. Nothing in C# adds the two
-                // numbers above together, so there is only ever one definition of a total.
-                TotalAmount = DbHelper.GetDecimal(row, "TotalAmount"),
-                CommissionAmount = DbHelper.GetDecimal(row, "CommissionAmount"),
-                // The address as it was at the time of the order, from the Orders row
-                // rather than from the customer's profile.
-                DeliveryAddress = DbHelper.GetString(row, "DeliveryAddress"),
-                PaymentMethod = DbHelper.GetString(row, "PaymentMethod"),
-                Status = DbHelper.GetString(row, "Status"),
-                // The five joined values, which turn this object into a complete invoice:
-                // who it is for, and which licensed pharmacy issued it.
-                CustomerName = DbHelper.GetString(row, "CustomerName"),
-                CustomerPhone = DbHelper.GetString(row, "CustomerPhone"),
-                PharmacyName = DbHelper.GetString(row, "PharmacyName"),
-                PharmacyAddress = DbHelper.GetString(row, "PharmacyAddress"),
-                PharmacyLicense = DbHelper.GetString(row, "PharmacyLicense")
+                DeliveryCharge = DbHelper.GetDecimal(row, "DeliveryCharge"),   // separate, because it is not commissionable
+                TotalAmount = DbHelper.GetDecimal(row, "TotalAmount"),   // the computed column, copied as-is
+                CommissionAmount = DbHelper.GetDecimal(row, "CommissionAmount"),   // frozen at checkout, not today's rate
+                DeliveryAddress = DbHelper.GetString(row, "DeliveryAddress"),   // as it was then, not from the profile now
+                PaymentMethod = DbHelper.GetString(row, "PaymentMethod"),   // one of four words the CHECK constraint allows
+                Status = DbHelper.GetString(row, "Status"),   // so a reprint shows 'Cancelled' rather than looking live
+                CustomerName = DbHelper.GetString(row, "CustomerName"),   // who the bill is for
+                CustomerPhone = DbHelper.GetString(row, "CustomerPhone"),   // the delivery contact, so a courier can call
+                PharmacyName = DbHelper.GetString(row, "PharmacyName"),   // the trading name at the head of the bill
+                PharmacyAddress = DbHelper.GetString(row, "PharmacyAddress"),   // where the medicine was dispensed from
+                PharmacyLicense = DbHelper.GetString(row, "PharmacyLicense")   // no trailing comma: the last member
             };
 
+            // The second query, separate from the header for the reason given below it.
             const string lines = @"
--- Subtotal is the PERSISTED computed column (Quantity * UnitPrice), so the line totals
--- on the invoice are the database's own arithmetic rather than a second calculation
--- that could round differently.
-SELECT  oi.OrderItemId, oi.OrderId, oi.MedicineId, oi.Quantity, oi.UnitPrice, oi.Subtotal,
-        -- Joined for display only. UnitPrice deliberately comes from OrderItems, not from
-        -- Medicines, because it is the price as SOLD; the catalogue price may have
-        -- changed many times since.
-        m.MedicineName, m.Strength
-FROM    OrderItems oi
-        INNER JOIN Medicines m ON m.MedicineId = oi.MedicineId
-WHERE   oi.OrderId = @OrderId
+SELECT  oi.OrderItemId, oi.OrderId, oi.MedicineId, oi.Quantity, oi.UnitPrice, oi.Subtotal,   -- Subtotal is persisted
+        m.MedicineName, m.Strength   -- joined for display only; the price stays as sold
+FROM    OrderItems oi   -- one row here is one printed line on the invoice
+        INNER JOIN Medicines m ON m.MedicineId = oi.MedicineId   -- name and strength only, nothing priced
+WHERE   oi.OrderId = @OrderId   -- the one order whose header was just read
 -- A fixed order, so reprinting the same invoice twice produces identical paper.
 ORDER BY m.MedicineName;";
 
-            // A second query rather than one big join with the header. Joining would repeat
-            // every header value once per line and invite a total to be summed twice.
+            // A second query rather than one big join, which would repeat every header value.
             DataTable items = _db.ExecuteTable(lines, DbHelper.P("@OrderId", orderId));
             // Walk the rows once, turning each into an OrderItem hanging off the order.
             foreach (DataRow line in items.Rows)
             {
-                // Items is initialised to an empty list in the model, never left null, so
-                // this Add needs no guard even for an order whose lines failed to load.
+                // Items is an empty list in the model, never null, so Add needs no guard.
                 order.Items.Add(new OrderItem
                 {
-                    OrderItemId = DbHelper.GetInt(line, "OrderItemId"),
-                    OrderId = DbHelper.GetInt(line, "OrderId"),
-                    MedicineId = DbHelper.GetInt(line, "MedicineId"),
-                    Quantity = DbHelper.GetInt(line, "Quantity"),
-                    UnitPrice = DbHelper.GetDecimal(line, "UnitPrice"),
-                    // Read, not multiplied: the database already holds Quantity * UnitPrice
-                    // and copying it keeps one source of truth for the line total.
-                    Subtotal = DbHelper.GetDecimal(line, "Subtotal"),
-                    MedicineName = DbHelper.GetString(line, "MedicineName"),
-                    Strength = DbHelper.GetString(line, "Strength")
+                    OrderItemId = DbHelper.GetInt(line, "OrderItemId"),   // the line's own key, kept for completeness
+                    OrderId = DbHelper.GetInt(line, "OrderId"),   // redundant, but it makes an OrderItem readable alone
+                    MedicineId = DbHelper.GetInt(line, "MedicineId"),   // what the review screen needs to know
+                    Quantity = DbHelper.GetInt(line, "Quantity"),   // how many units, as sold
+                    UnitPrice = DbHelper.GetDecimal(line, "UnitPrice"),   // the price AT THE TIME, from OrderItems
+                    Subtotal = DbHelper.GetDecimal(line, "Subtotal"),   // read, not multiplied: one source of truth
+                    MedicineName = DbHelper.GetString(line, "MedicineName"),   // display only, joined in
+                    Strength = DbHelper.GetString(line, "Strength")   // '500mg' and the like, so two products differ
                 });
             }
 
-            // One fully assembled object: header plus lines. InvoiceForm can print the
-            // whole bill from this single variable without going back to the database.
+            // One assembled object: header plus lines, so InvoiceForm needs no second read.
             return order;
         }
 
+        // The grid version of the invoice lines: bound and displayed, no rules.
         public DataTable GetOrderItems(int orderId)
         {
+            // const, so it cannot be rebuilt at run time with a value pasted into it.
             const string sql = @"
--- The grid-binding version of the query above: only the columns a reader needs to see,
--- with no ids, because this DataTable is bound straight to a DataGridView.
-SELECT  m.MedicineName, m.Strength, oi.Quantity, oi.UnitPrice, oi.Subtotal
-FROM    OrderItems oi
-        INNER JOIN Medicines m ON m.MedicineId = oi.MedicineId
-WHERE   oi.OrderId = @OrderId
+SELECT  m.MedicineName, m.Strength, oi.Quantity, oi.UnitPrice, oi.Subtotal   -- no ids: this binds straight to a grid
+FROM    OrderItems oi   -- the order's lines are the rows of the grid, one for one
+        INNER JOIN Medicines m ON m.MedicineId = oi.MedicineId   -- names and strengths only
+WHERE   oi.OrderId = @OrderId   -- the caller has already established this order is the viewer's
+-- Alphabetical, so the same order always renders in the same sequence.
 ORDER BY m.MedicineName;";
 
-            return _db.ExecuteTable(sql, DbHelper.P("@OrderId", orderId));
+            return _db.ExecuteTable(sql, DbHelper.P("@OrderId", orderId));   // one parameter, so the call fits on a line
         }
 
-        // =====================================================================
-        //  PHARMACY OWNER: ORDER QUEUE AND STATUS
-        // =====================================================================
+        // == pharmacy owner: order queue and status ==
 
         /// <summary>Orders belonging to this pharmacy only.</summary>
         public DataTable GetOrdersForPharmacy(int pharmacyId, string status)
         {
+            // The owner's work queue: every column answers "what do I do with this next".
             const string sql = @"
-SELECT  o.OrderId, o.OrderDate, u.FullName AS CustomerName, u.Phone AS CustomerPhone,
-        -- The owner needs to reach the customer about a delivery, which is why the
-        -- contact columns are joined in rather than left to a second lookup.
-        COUNT(oi.OrderItemId) AS Items, o.ItemsTotal, o.DeliveryCharge, o.TotalAmount,
-        o.PaymentMethod, o.Status, o.DeliveryAddress,
-        -- A ready-made label for the queue, computed by the query so the form does not
-        -- have to run a second question per row. It mirrors exactly the condition that
-        -- Confirm() enforces below, so the badge and the button can never disagree.
-        CASE WHEN EXISTS (SELECT 1 FROM Prescriptions p
-                          -- Anything not yet Approved blocks: Pending and Rejected alike.
-                          WHERE p.OrderId = o.OrderId AND p.VerifyStatus <> 'Approved')
-             THEN 'Waiting on Rx' ELSE 'Clear' END AS RxState
-FROM    Orders o
-        INNER JOIN Users u       ON u.UserId    = o.CustomerId
-        INNER JOIN OrderItems oi ON oi.OrderId  = o.OrderId
--- The isolation line. PharmacyId comes from UserSession, so an owner's dashboard can
--- only ever list orders placed with their own shop.
-WHERE   o.PharmacyId = @PharmacyId
-  AND   (@Status = '' OR o.Status = @Status)
-GROUP BY o.OrderId, o.OrderDate, u.FullName, u.Phone, o.ItemsTotal, o.DeliveryCharge,
-         o.TotalAmount, o.PaymentMethod, o.Status, o.DeliveryAddress
+SELECT  o.OrderId, o.OrderDate, u.FullName AS CustomerName, u.Phone AS CustomerPhone,   -- who placed it, and how to reach them
+        COUNT(oi.OrderItemId) AS Items, o.ItemsTotal, o.DeliveryCharge, o.TotalAmount,   -- how big the order is
+        o.PaymentMethod, o.Status, o.DeliveryAddress,   -- enough to label a parcel without opening the order
+        CASE WHEN EXISTS (SELECT 1 FROM Prescriptions p   -- a ready-made badge, computed once per row
+                          WHERE p.OrderId = o.OrderId AND p.VerifyStatus <> 'Approved')   -- Pending and Rejected both block
+             THEN 'Waiting on Rx' ELSE 'Clear' END AS RxState   -- two words the owner can act on
+FROM    Orders o   -- Orders is the queue; the joins only add names and counts
+        INNER JOIN Users u       ON u.UserId    = o.CustomerId   -- the customer's name and phone
+        INNER JOIN OrderItems oi ON oi.OrderId  = o.OrderId   -- joined so COUNT has something to count
+WHERE   o.PharmacyId = @PharmacyId   -- from UserSession, so an owner sees only their own orders
+  AND   (@Status = '' OR o.Status = @Status)   -- the same empty-means-everything filter, for the status tabs
+GROUP BY o.OrderId, o.OrderDate, u.FullName, u.Phone, o.ItemsTotal, o.DeliveryCharge,   -- required by the COUNT above
+         o.TotalAmount, o.PaymentMethod, o.Status, o.DeliveryAddress   -- RxState is derived from a grouped column
 -- Newest first: the queue is worked from the top.
 ORDER BY o.OrderDate DESC;";
 
-            return _db.ExecuteTable(sql,
-                DbHelper.P("@PharmacyId", pharmacyId),
-                DbHelper.P("@Status", status ?? ""));
+            return _db.ExecuteTable(sql,   // bound to the dashboard grid, so an empty queue must not be null
+                DbHelper.P("@PharmacyId", pharmacyId),   // the signed-in owner's shop
+                DbHelper.P("@Status", status ?? ""));   // ?? "" as everywhere else: NULL would match nothing
         }
 
-        /// <summary>
-        /// An order cannot be moved to Confirmed while a prescription on it is
-        /// still Pending. The NOT EXISTS clause enforces that in the database
-        /// rather than trusting the form to disable a button.
-        /// </summary>
+        /// <summary>No order reaches Confirmed while an Rx is unapproved.</summary>
         public bool Confirm(int orderId, int pharmacyId)
         {
+            // Four conditions in one statement, so no connection can slip between them.
             const string sql = @"
-UPDATE  Orders
--- The literal target state. CK_Orders_Status allows only Placed, Confirmed, Delivered
--- and Cancelled, so the progression cannot be written into an invented value.
-SET     Status = 'Confirmed'
-WHERE   OrderId = @OrderId
+UPDATE  Orders   -- single-table: every condition reads Orders or a correlated subquery
+SET     Status = 'Confirmed'   -- a literal, because CK_Orders_Status allows only four words
+WHERE   OrderId = @OrderId   -- the primary key picks the row
   AND   PharmacyId = @PharmacyId              -- isolation: only your own orders
-  -- Only a Placed order can become Confirmed. Naming the expected current status
-  -- makes this update idempotent: pressing Confirm twice changes one row the first
-  -- time and zero the second, instead of silently re-confirming.
-  AND   Status = 'Placed'
-  -- The prescription gate, enforced by the DATABASE rather than by a disabled button.
-  -- NOT EXISTS returns true only when no prescription on this order is still waiting,
-  -- so an order with a Pending or Rejected Rx cannot be dispatched even if the form
-  -- were bypassed. The dashboard disables the button too, but that is a courtesy;
-  -- THIS is the rule.
-  AND   NOT EXISTS (SELECT 1 FROM Prescriptions p
+  AND   Status = 'Placed'   -- naming the expected state makes pressing Confirm twice harmless
+  AND   NOT EXISTS (SELECT 1 FROM Prescriptions p   -- the Rx gate, enforced here and not by a disabled button
+-- <> 'Approved' catches Pending and Rejected, so a rejected image blocks too.
                     WHERE p.OrderId = @OrderId AND p.VerifyStatus <> 'Approved');";
 
-            // == 1 carries all four conditions at once: exactly one row changed means the
-            // order existed, belonged to this shop, was still Placed and had no unapproved
-            // prescription. 0 means one of those was false, and the form says so.
+            // == 1 means all four held: it existed, was this shop's, was Placed, Rx clear.
             return _db.ExecuteNonQuery(sql,
-                DbHelper.P("@OrderId", orderId),
-                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
+                DbHelper.P("@OrderId", orderId),   // the row picked from the owner's queue
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;   // from the session, so ownership cannot be spoofed
         }
 
+        // The second step, Confirmed -> Delivered, so no caller can invent a transition.
         public bool MarkDelivered(int orderId, int pharmacyId)
         {
-            return _db.ExecuteNonQuery(
-                // "AND Status = 'Confirmed'" is what enforces the progression Placed ->
-                // Confirmed -> Delivered. Without it an order could jump straight from
-                // Placed to Delivered and skip the prescription check in Confirm()
-                // altogether. PharmacyId keeps one shop out of another shop's queue.
+            return _db.ExecuteNonQuery(   // rows affected again: 1 is the only outcome that means it happened
+                // "AND Status = 'Confirmed'" enforces Placed -> Confirmed -> Delivered.
                 "UPDATE Orders SET Status = 'Delivered' WHERE OrderId = @OrderId AND PharmacyId = @PharmacyId AND Status = 'Confirmed';",
-                DbHelper.P("@OrderId", orderId),
-                // == 1 again: one row changed is the only outcome that counts as delivered.
-                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
+                DbHelper.P("@OrderId", orderId),   // which order the owner ticked off
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;   // and PharmacyId keeps one shop out of another's queue
         }
 
-        /// <summary>
-        /// Cancelling puts the stock back on the shelf, inside one transaction.
-        ///
-        /// Both statements are guarded by the same condition on purpose. An
-        /// earlier version restocked whenever the order was not already
-        /// cancelled but only flipped the status when it was not delivered, so
-        /// cancelling a delivered order returned the units to stock and left the
-        /// order reading Delivered. The eligibility test is now made once, in
-        /// the database, and both statements sit behind it.
-        /// </summary>
+        /// <summary>Cancelling puts the stock back, inside one transaction.</summary>
         public bool Cancel(int orderId, int pharmacyId)
         {
-            // The transaction here is written in T-SQL rather than opened in C#, so the
-            // whole batch still travels through DbHelper as a single command and its
-            // errors are translated by DbHelper.Describe() like every other query.
+            // The transaction is written in T-SQL, so DbHelper still translates its errors.
             const string sql = @"
--- XACT_ABORT ON means any runtime error aborts the whole batch rather than leaving
--- a half applied transaction open. Belt and braces alongside the CATCH below.
-SET XACT_ABORT ON;
+SET XACT_ABORT ON;   -- any runtime error aborts the whole batch, belt and braces with the CATCH
+-- TRY/CATCH in T-SQL, because the rollback has to happen on the server.
 BEGIN TRY
-    BEGIN TRANSACTION;
+    BEGIN TRANSACTION;   -- both writes below are inside it, so neither can land alone
 
-    -- Initialised to 0 so the batch returns a definite 'nothing was cancelled' when the
-    -- eligibility test below fails, instead of returning NULL.
-    DECLARE @Cancelled INT = 0;
+    DECLARE @Cancelled INT = 0;   -- 0, so a refused cancel returns a definite answer, not NULL
 
-    -- THE ELIGIBILITY TEST, MADE ONCE. This is the fix for a real bug: an earlier
-    -- version guarded the two statements separately, restocking whenever the order
-    -- was not already Cancelled but only flipping the status when it was not
-    -- Delivered. Cancelling a DELIVERED order therefore put the units back on the
-    -- shelf and left the order still reading Delivered - free stock, silently.
-    -- Testing once, here, means both statements share exactly one condition.
+    -- THE ELIGIBILITY TEST, MADE ONCE, so both writes share exactly one condition.
     IF EXISTS (SELECT 1 FROM Orders
-               WHERE OrderId    = @OrderId
-                 -- Ownership, as on every other write in this class.
-                 AND PharmacyId = @PharmacyId
-                 -- Delivered is too late to cancel and Cancelled is already done, so
-                 -- both are excluded by the same NOT IN.
-                 AND Status NOT IN ('Delivered', 'Cancelled'))
-    BEGIN
-        -- Put every unit on this order back. Joining OrderItems gives one row per
-        -- line, so each medicine is credited with its own quantity.
-        -- UQ_OrderItems_Line makes (OrderId, MedicineId) unique, which is what stops a
-        -- medicine appearing twice on one order and being credited twice.
-        UPDATE  m SET m.Stock = m.Stock + oi.Quantity
-        FROM    Medicines m INNER JOIN OrderItems oi ON oi.MedicineId = m.MedicineId
-        WHERE   oi.OrderId = @OrderId;
+               WHERE OrderId    = @OrderId   -- the primary key, so one order is tested
+                 AND PharmacyId = @PharmacyId   -- ownership, as on every other write here
+                 AND Status NOT IN ('Delivered', 'Cancelled'))   -- too late to cancel, or already done
+    BEGIN   -- groups both writes behind the single test above, which is the bug fix
+        UPDATE  m SET m.Stock = m.Stock + oi.Quantity   -- put every unit on this order back
+        FROM    Medicines m INNER JOIN OrderItems oi ON oi.MedicineId = m.MedicineId   -- the mirror of checkout's deduction
+        WHERE   oi.OrderId = @OrderId;   -- this order's lines only; the EXISTS proved ownership
 
-        -- The same conditions again, so the write cannot land on an order the test did
-        -- not clear, and so the row count below means what it says.
+        -- The same conditions again, so the UPDATE is self-guarding.
         UPDATE  Orders SET Status = 'Cancelled'
-        WHERE   OrderId    = @OrderId
-          AND   PharmacyId = @PharmacyId
-          AND   Status NOT IN ('Delivered', 'Cancelled');
+        WHERE   OrderId    = @OrderId   -- the primary key picks the row...
+          AND   PharmacyId = @PharmacyId   -- ...ownership is re-asserted on the write...
+          AND   Status NOT IN ('Delivered', 'Cancelled');   -- ...and the status test is repeated
 
-        -- @@ROWCOUNT is read IMMEDIATELY after the UPDATE, because any later
-        -- statement would overwrite it. 1 means the order really was cancelled.
-        SET @Cancelled = @@ROWCOUNT;
-    END
+        SET @Cancelled = @@ROWCOUNT;   -- read IMMEDIATELY, because any later statement overwrites it
+    END   -- an order that failed the test skips both writes and leaves @Cancelled at 0
 
-    -- The restock and the status change become visible together; neither can be seen
-    -- on its own by another connection.
-    COMMIT TRANSACTION;
+    COMMIT TRANSACTION;   -- the restock and the status change become visible together
     SELECT @Cancelled;              -- handed back to C# as the success flag
-END TRY
+END TRY   -- anything that threw above jumps straight to the CATCH
+-- Reached only on a runtime error, and its job is to leave nothing half-applied.
 BEGIN CATCH
-    -- XACT_STATE() <> 0 means a transaction is still open and must be undone.
-    -- Rolling back first and THEN rethrowing keeps the original error intact for
-    -- DbHelper to translate, instead of masking it with a rollback failure.
-    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
-    THROW;
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;   -- non-zero means a transaction is still open
+    THROW;   -- re-raises the ORIGINAL error, so DbHelper can translate it as usual
+-- Closes the handler and the batch.
 END CATCH;";
 
-            // ExecuteScalarInt, not ExecuteNonQuery: the rows affected would also count the
-            // restocked medicines, so the batch computes its own flag and hands that back.
+            // ExecuteScalarInt: rows affected would also count the restocked medicines.
             return _db.ExecuteScalarInt(sql,
-                DbHelper.P("@OrderId", orderId),
-                // == 1 means one order row moved to Cancelled. 0 means it was already
-                // delivered, already cancelled, or not this pharmacy's to cancel.
-                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
+                DbHelper.P("@OrderId", orderId),   // the order the owner chose to cancel
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;   // 0 means already delivered, already cancelled, or not theirs
         }
 
+        // The ownership question as its own method, so every screen asks it the same way.
         public bool OrderBelongsToCustomer(int orderId, int customerId)
         {
-            // The ownership guard the invoice and review screens call before showing
-            // anything, so typing another customer's order number into a dialog returns
-            // false rather than somebody else's bill.
-            return _db.ExecuteScalarInt(
-                "SELECT COUNT(*) FROM Orders WHERE OrderId = @OrderId AND CustomerId = @CustomerId;",
-                DbHelper.P("@OrderId", orderId),
-                // == 1 rather than > 0 because OrderId is the primary key: the count can
-                // only ever be 0 or 1, and 1 is the single answer that means yes.
-                DbHelper.P("@CustomerId", customerId)) == 1;
+            return _db.ExecuteScalarInt(   // a COUNT, so the answer is a number rather than a row
+                "SELECT COUNT(*) FROM Orders WHERE OrderId = @OrderId AND CustomerId = @CustomerId;",   // both columns, so 1 means BOTH matched
+                DbHelper.P("@OrderId", orderId),   // the order being opened, which may have been typed
+                DbHelper.P("@CustomerId", customerId)) == 1;   // == 1, not > 0: OrderId is the primary key
         }
     }
 }

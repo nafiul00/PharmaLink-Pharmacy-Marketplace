@@ -1,544 +1,364 @@
 using System.Drawing;               // Font and Color, for ApplyTheme and the disabled button's grey
 using System.Windows.Forms;         // Form, Label, TextBox, ComboBox, MessageBox, Cursors
-using PharmaLinkApp.Helpers;        // UiTheme (styling and the error helpers) and Validator (every field rule)
+using PharmaLinkApp.Helpers;        // UiTheme for styling and error labels, Validator for field rules
 using PharmaLinkApp.Models;         // User and Pharmacy, the two objects this form fills in
-using PharmaLinkApp.Services;       // AuthService (writes the rows) and PharmacyService (area suggestions)
+using PharmaLinkApp.Services;       // AuthService writes the rows, PharmacyService suggests areas
 
+// Forms is the presentation layer: a form gathers input and hands it to a service.
 namespace PharmaLinkApp.Forms
 {
-    // -------------------------------------------------------------------------
-    //  Layer: presentation, modal dialog opened by LoginForm. Uses AuthService
-    //  and PharmacyService (only to suggest existing areas).
-    //
-    //  Load order:
-    //      SignUpForm_Load -> ApplyTheme -> fill the "Register as" ComboBox
-    //                      -> LoadAreaSuggestions -> ValidateAll
-    //
-    //  The "Register as" ComboBox decides which path runs: index 1 is a pharmacy
-    //  owner, which enables grpPharmacy and changes the button text. Every field
-    //  is validated as it is typed through Field_Changed -> ValidateAll, and the
-    //  Create button stays disabled until every rule passes.
-    //
-    //  btnCreate_Click checks EmailExists, PhoneExists and, for an owner,
-    //  LicenseExists before writing, so the user gets a message under the right
-    //  field instead of a UNIQUE violation. Those database constraints are what
-    //  actually enforce uniqueness; these checks only make the failure readable.
-    //  It then calls RegisterCustomer, or RegisterPharmacyOwner which writes the
-    //  Users row and the Pharmacies row inside one transaction.
-    //
-    //  RegisteredEmail is read back by LoginForm to pre-fill the email box.
-    // -------------------------------------------------------------------------
-
-    /// <summary>
-    /// Registration for both kinds of account (requirements 10 and 19).
-    ///
-    /// The "Register as" dropdown decides which of the two paths runs. A
-    /// customer is created Active and can order immediately; a pharmacy owner
-    /// is created Pending together with a Pending Pharmacies row, and neither
-    /// becomes usable until the Super Admin has checked the drug licence.
-    /// </summary>
-    public partial class SignUpForm : Form
+    /// <summary>Registration for a customer or a pharmacy owner.</summary>
+    public partial class SignUpForm : Form   // requirements 10 and 19; opened by LoginForm
     {
-        // Two services, both stateless, both created once for the life of the dialog.
-        // AuthService does the writing; PharmacyService is used for one read only, and a
-        // failure in that read is not allowed to stop registration - see LoadAreaSuggestions.
-        private readonly AuthService _auth = new AuthService();
-        private readonly PharmacyService _pharmacies = new PharmacyService();
+        private readonly AuthService _auth = new AuthService();                 // does all the writing
+        private readonly PharmacyService _pharmacies = new PharmacyService();   // one read only, GetAreas
 
-        /// <summary>Read by LoginForm so the new user's email is pre-filled after registration.</summary>
-        // private set: the dialog is the only thing allowed to fill this in, but the caller
-        // may read it after the window has closed. That is how a modal dialog returns a value
-        // without the two forms having to know anything else about each other.
-        public string RegisteredEmail { get; private set; } = "";
+        /// <summary>Read by LoginForm to pre-fill the email box.</summary>
+        public string RegisteredEmail { get; private set; } = "";   // private set: only this dialog fills it
 
-        // The whole two-path design turns on this one expression. Writing it once, as a
-        // property, means the enable/disable code, the validation and the save path can never
-        // disagree about which kind of account is being created. Index 1 is hard wired to the
-        // second item added in SignUpForm_Load, so those two places must stay in step.
+        // Index 1 is the second item added in Load, so those two places must stay in step.
         private bool IsPharmacyOwner => cmbRegisterAs.SelectedIndex == 1;
 
+        // Bare on purpose: no window handle yet, so database work waits for Load.
         public SignUpForm()
         {
-            // Designer generated: builds the controls. Everything that reads the database or
-            // assumes a visible window is deferred to the Load handler below.
-            InitializeComponent();
+            InitializeComponent();   // designer generated: builds the controls and nothing else
         }
 
+        // Raised once, after the controls exist and the window is about to be shown.
         private void SignUpForm_Load(object sender, EventArgs e)
         {
-            ApplyTheme();
+            ApplyTheme();      // colours and fonts first, so the window never flashes unstyled
 
-            // The two items are added in code rather than in the designer so that the order -
-            // and therefore the meaning of index 1 in IsPharmacyOwner - is visible in the same
-            // file as the code that depends on it.
-            cmbRegisterAs.Items.Add("Customer  (patient buying medicine)");
-            cmbRegisterAs.Items.Add("Pharmacy Owner  (shop selling medicine)");
-            // Defaulting to Customer, the commoner case, means the pharmacy group starts
-            // disabled and the form opens in its simplest state. Assigning SelectedIndex also
-            // raises SelectedIndexChanged, which is what actually greys out grpPharmacy and
-            // sets the button caption, so no duplicate of that code is needed here.
-            cmbRegisterAs.SelectedIndex = 0;
+            cmbRegisterAs.Items.Add("Customer  (patient buying medicine)");        // index 0, the default
+            cmbRegisterAs.Items.Add("Pharmacy Owner  (shop selling medicine)");    // added SECOND: index 1 means owner
+            cmbRegisterAs.SelectedIndex = 0;   // this assignment also raises the handler that shapes the form
 
-            LoadAreaSuggestions();
-            ValidateAll();     // on an empty form this exists only to leave the Create button disabled
+            LoadAreaSuggestions();   // the one database read on this load path, and an optional one
+            ValidateAll();     // on an empty form this only leaves the Create button disabled
         }
 
+        // Colours and fonts live here, never in the file the designer rewrites.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Create account");
+            UiTheme.StyleForm(this, "Create account");   // page colour, body font and the title bar format
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblHeader.Font = UiTheme.FontTitle;
-            lblHeader.ForeColor = Color.White;
-            lblHeaderSub.Font = UiTheme.FontSmall;
-            lblHeaderSub.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;     // the same green strip every other screen opens with
+            lblHeader.Font = UiTheme.FontTitle;          // the screen name, at the size reserved for it
+            lblHeader.ForeColor = Color.White;           // white on the green, the only legible pairing
+            lblHeaderSub.Font = UiTheme.FontSmall;       // the explanatory second line, deliberately smaller
+            lblHeaderSub.ForeColor = Color.FromArgb(200, 230, 220);   // a pale tint, so it recedes behind the title
 
-            grpPersonal.Font = UiTheme.FontHeading;
-            grpPersonal.ForeColor = UiTheme.Primary;
-            grpPersonal.BackColor = UiTheme.CardBack;
+            grpPersonal.Font = UiTheme.FontHeading;      // sets the GROUP CAPTION only; children are done below
+            grpPersonal.ForeColor = UiTheme.Primary;     // a green caption shows this group is the active one
+            grpPersonal.BackColor = UiTheme.CardBack;    // white, so the group reads as a card on the page
 
-            grpPharmacy.Font = UiTheme.FontHeading;
-            grpPharmacy.ForeColor = UiTheme.Primary;
-            grpPharmacy.BackColor = UiTheme.CardBack;
+            grpPharmacy.Font = UiTheme.FontHeading;      // identical treatment, because the two groups are peers
+            grpPharmacy.ForeColor = UiTheme.Primary;     // only the STARTING state; the dropdown handler dims it
+            grpPharmacy.BackColor = UiTheme.CardBack;    // the same white card even while the group is disabled
 
+            // One loop instead of naming thirty controls, so a field added later is covered.
             foreach (Control group in new Control[] { grpPersonal, grpPharmacy })
             {
+                // Direct children only, which is all this form has: nothing here is nested.
                 foreach (Control child in group.Controls)
                 {
-                    child.Font = UiTheme.FontBody;
-                    child.ForeColor = UiTheme.TextDark;
+                    child.Font = UiTheme.FontBody;      // undoes the FontHeading inherited from the caption
+                    child.ForeColor = UiTheme.TextDark; // the standard near black, before the error labels
+                    // The "Error" name suffix is the same convention ValidateAll matches on.
                     if (child is Label label && label.Name.EndsWith("Error"))
                     {
-                        label.Font = UiTheme.FontSmall;
-                        label.ForeColor = UiTheme.Danger;
+                        label.Font = UiTheme.FontSmall; // smaller, so a full sentence fits without wrapping
+                        label.ForeColor = UiTheme.Danger;   // red already, so ShowError need only supply words
                     }
                 }
             }
 
-            lblPendingNote.Font = UiTheme.FontSmall;
-            lblPendingNote.ForeColor = UiTheme.Warning;
+            lblPendingNote.Font = UiTheme.FontSmall;    // the standing note about approval, sized as a caption
+            lblPendingNote.ForeColor = UiTheme.Warning; // amber, not red: be aware, nothing has gone wrong
 
-            lblFormMessage.Font = UiTheme.FontSmall;
-            lblFormMessage.ForeColor = UiTheme.Danger;
+            lblFormMessage.Font = UiTheme.FontSmall;    // the form level message, styled once here
+            lblFormMessage.ForeColor = UiTheme.Danger;  // red: only a failure from btnCreate_Click lands in it
 
-            UiTheme.StylePrimary(btnCreate);
+            UiTheme.StylePrimary(btnCreate);            // the confirming action, so it takes the brand green
+            // The one theme override on this form: a heavier face for the single decision.
             btnCreate.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            UiTheme.StyleSecondary(btnBack);
+            UiTheme.StyleSecondary(btnBack);            // quiet white, so leaving is not the main action
         }
 
-        /// <summary>
-        /// Fills the Area dropdown with the areas existing pharmacies are already in, then
-        /// tops it up with the common Dhaka areas. The box stays editable, so this is a list
-        /// of suggestions rather than a constraint - Pharmacies.Area is plain NVARCHAR and
-        /// accepts anything, which is why nothing here is treated as a rule.
-        /// </summary>
+        /// <summary>Fills the Area box with known areas plus common Dhaka ones.</summary>
         private void LoadAreaSuggestions()
         {
-            // Clear first: this method could be called twice, and Items.Add appends rather
-            // than replaces, so without this the list would grow duplicates.
-            cmbArea.Items.Clear();
+            cmbArea.Items.Clear();   // Add appends, so without this a second call would grow duplicates
+            // The try wraps the database call only; the fallback list below sits outside it.
             try
             {
-                // false means "not approved only", so a Pending shop's area still shows up as a
-                // suggestion. A new owner registering in the same area as another pending one
-                // should not have to type it out because nobody has been approved there yet.
+                // false means "not approved only", so a Pending shop's area still suggests.
                 foreach (string area in _pharmacies.GetAreas(false))
-                    cmbArea.Items.Add(area);
+                    cmbArea.Items.Add(area);   // real areas go in first, above the hard coded fallbacks
             }
+            // No exception type and no variable: every failure of this read has one answer.
             catch
             {
-                // The area list is only a convenience; a fresh database has none yet.
-                //
-                // Swallowing the exception is justified precisely because nothing downstream
-                // depends on it: the fallback list below still runs, the box is editable, and
-                // registration works with an empty dropdown. This is the one shape of empty
-                // catch that is defensible - an optional read whose failure has a working
-                // fallback. The same silence around the INSERT below would hide a lost account.
+                // The area list is only a convenience, and a fresh database has none yet.
             }
 
-            // The fallback list, added second so a real area from the database keeps its place
-            // near the top. Contains() stops an area appearing twice when the database already
-            // holds a pharmacy in, say, Mitford.
+            // Added second, so a real area from the database keeps its place near the top.
             foreach (string area in new[] { "Mitford", "Dhanmondi", "Mirpur", "Uttara", "Banani", "Gulshan", "Mohammadpur" })
             {
-                if (!cmbArea.Items.Contains(area)) cmbArea.Items.Add(area);
+                if (!cmbArea.Items.Contains(area)) cmbArea.Items.Add(area);   // Contains stops Mitford appearing twice
             }
         }
 
+        // Raised on every change of the dropdown, including the assignment made in Load.
         private void cmbRegisterAs_SelectedIndexChanged(object sender, EventArgs e)
         {
-            // Switching the dropdown reshapes the whole form. Enabled, not Visible: the shop
-            // fields stay on screen, greyed out, so the user can see what registering as a
-            // pharmacy would ask for before choosing it. Hiding them would make the window
-            // jump in size and hide the difference between the two paths.
-            grpPharmacy.Enabled = IsPharmacyOwner;
-            grpPharmacy.ForeColor = IsPharmacyOwner ? UiTheme.Primary : UiTheme.TextMuted;
-            // The group's own caption is dimmed too, because a disabled GroupBox does not grey
-            // its title text by itself and a green heading over dead fields reads as a bug.
-            lblAddress.Text = IsPharmacyOwner ? "Your personal address" : "Delivery address";
-            // Same database column, two meanings. For a customer Users.Address is where orders
-            // are delivered; for an owner it is a personal address and the shop's address is a
-            // separate field. Relabelling is cheaper and clearer than a second column.
-            btnCreate.Text = IsPharmacyOwner ? "Submit for approval" : "Create account";
-            // The caption tells the truth about what the click will do: a customer account is
-            // created Active and usable, a pharmacy is created Pending and is not.
-            ValidateAll();
-            // Re-validate immediately, because the rule set itself has just changed. Switching
-            // to Pharmacy Owner adds five required fields that are all empty, so the button
-            // must go back to grey without the user touching anything.
+            grpPharmacy.Enabled = IsPharmacyOwner;   // Enabled, not Visible, so the window never jumps size
+            grpPharmacy.ForeColor = IsPharmacyOwner ? UiTheme.Primary : UiTheme.TextMuted;   // a disabled box will not dim its own caption
+            lblAddress.Text = IsPharmacyOwner ? "Your personal address" : "Delivery address";   // one column, two meanings
+            btnCreate.Text = IsPharmacyOwner ? "Submit for approval" : "Create account";   // the caption tells the truth about the click
+            ValidateAll();   // the rule set itself just changed, so the button must go back to grey
         }
 
-        // ---------------------------------------------------------------------
-        //  VALIDATION
-        //  Each failure shows a red label directly under the offending field and
-        //  keeps the Create button disabled. Every rule here is enforced again by
-        //  a CHECK or UNIQUE constraint in the database.
-        // ---------------------------------------------------------------------
+        // -- VALIDATION: a red label under the field, and the button stays disabled
 
+        // One handler for every box, because the verdict is recomputed for the whole form.
         private void Field_Changed(object sender, EventArgs e)
         {
-            // Wired to the TextChanged event of every box on the form, so one method keeps the
-            // whole form's verdict up to date on every keystroke. The user never presses a
-            // Validate button and never meets a wall of errors at the end.
-            lblFormMessage.Visible = false;
-            // Hide the form level message, which reports the outcome of the LAST save attempt.
-            // Once a character has been typed that sentence describes a state that no longer
-            // exists, and leaving it up would contradict what the field labels now say.
-            ValidateAll();
+            lblFormMessage.Visible = false;   // the last save attempt's message no longer describes reality
+            ValidateAll();                    // keeps the verdict current on every keystroke
         }
 
+        // Returns the verdict as well as painting it: btnCreate_Click needs it too.
         private bool ValidateAll()
         {
-            bool ok = true;
+            bool ok = true;    // optimistic: every rule below can only ever clear it, never set it
 
-            // Note &= and not &&=. C# has no &&= operator, and rewriting these as
-            // ok = ok && Check(...) would SHORT CIRCUIT: once one field failed, every Check
-            // after it would be skipped and those fields would never get their red label. With
-            // &= every Check runs on every keystroke, so the form shows all of its problems at
-            // once rather than one per correction.
+            // &= and not &&=, because && would short circuit and skip the later red labels.
 
-            // -- full name ----------------------------------------------------
-            // Non-blank only: names have no computable shape, and any length or character rule
-            // here would refuse somebody's real name. Users.FullName is NVARCHAR(100) NOT NULL,
-            // which stops a MISSING value but would happily store an empty string, so this
-            // check is what actually keeps a nameless account out.
+            // -- full name: non-blank only, since a real name has no computable shape
             ok &= Check(!Validator.IsBlank(txtFullName.Text), lblFullNameError, txtFullName,
-                        "Please enter your full name.");
+                        "Please enter your full name.");   // says what to do, not what is wrong
 
-            // -- email --------------------------------------------------------
-            // Blank is handled separately from wrong, here and for every field below. An empty
-            // box means "not finished yet", so the message is cleared and the button stays
-            // disabled; a filled box that breaks the rule earns red text. Without this split,
-            // the form would light up in red before a single character had been typed.
+            // -- email: blank means unfinished, so it is cleared rather than shown as wrong
             if (Validator.IsBlank(txtEmail.Text))
             {
-                UiTheme.ClearError(lblEmailError, txtEmail);
-                ok = false;
+                UiTheme.ClearError(lblEmailError, txtEmail);   // an empty box is unfinished, not wrong
+                ok = false;                                    // it still blocks the button, silently
             }
+            // Something was typed, so the shape rule is finally worth applying.
             else
             {
-                // Validator.IsEmail is the same rule as CK_Users_Email (Email LIKE '%_@_%._%')
-                // on the Users table, so this message appears in exactly the cases the database
-                // would have refused the row. Uniqueness is a separate matter and is checked
-                // against the database in btnCreate_Click, because no regular expression can
-                // know what is already stored.
+                // Validator.IsEmail is the same rule as CK_Users_Email on the Users table.
                 ok &= Check(Validator.IsEmail(txtEmail.Text), lblEmailError, txtEmail,
-                            "Enter a valid email address, for example name@example.com.");
+                            "Enter a valid email address, for example name@example.com.");   // the example shows the shape
             }
 
-            // -- mobile number ------------------------------------------------
+            // -- mobile number: the same blank-is-not-wrong split as the email above
             if (Validator.IsBlank(txtPhone.Text))
             {
-                UiTheme.ClearError(lblPhoneError, txtPhone);
-                ok = false;
+                UiTheme.ClearError(lblPhoneError, txtPhone);   // unfinished, so no accusation is made
+                ok = false;                                    // but the button stays grey
             }
+            // Something was typed, so the format rule applies.
             else
             {
-                // Eleven digits starting 01 is the Bangladeshi mobile format. This is the one
-                // rule on this form that is enforced only ONCE: Users.Phone carries
-                // UQ_Users_Phone, so a duplicate is refused by the database, but there is no
-                // CHECK on its shape. A CK_Users_Phone would close that gap; until then this
-                // method is the only thing standing between a landline number and the column.
+                // 11 digits starting 01. UQ_Users_Phone stops duplicates; no CHECK on shape.
                 ok &= Check(Validator.IsMobile(txtPhone.Text), lblPhoneError, txtPhone,
-                            "A mobile number is 11 digits and starts with 01.");
+                            "A mobile number is 11 digits and starts with 01.");   // both halves of the rule are stated
             }
 
-            // -- address ------------------------------------------------------
-            // Users.Address is NULLable, so the database has no opinion here at all. The rule
-            // exists because a delivery address is needed later at checkout, and collecting it
-            // once at sign up is friendlier than blocking a customer mid-order. Checkout
-            // re-validates it anyway, because the box there is editable.
+            // -- address: NULLable in the table, but checkout needs one, so collect it here
             ok &= Check(!Validator.IsBlank(txtAddress.Text), lblAddressError, txtAddress,
-                        "Please enter an address.");
+                        "Please enter an address.");   // a non-empty address is the entire rule
 
-            // -- password -----------------------------------------------------
+            // -- password
             if (Validator.IsBlank(txtPassword.Text))
             {
-                UiTheme.ClearError(lblPasswordError, txtPassword);
-                ok = false;
+                UiTheme.ClearError(lblPasswordError, txtPassword);   // an untouched box is empty, not weak
+                ok = false;                                          // but it still cannot be submitted
             }
+            // A password was typed, so its strength can finally be judged.
             else
             {
-                // Six characters and at least one digit. This rule CANNOT be enforced in the
-                // database: only the salted hash is ever stored, and a hash of a weak password
-                // is indistinguishable from a hash of a strong one. It is therefore a genuine
-                // exception to the "validated twice" pattern, and the reason the rule lives in
-                // Validator rather than inline - one definition, shared with the password
-                // change screen, so the two cannot drift apart.
+                // The one rule the database cannot enforce: only the salted hash is stored.
                 ok &= Check(Validator.IsStrongPassword(txtPassword.Text), lblPasswordError, txtPassword,
-                            "Password needs at least 6 characters and at least one digit.");
+                            "Password needs at least 6 characters and at least one digit.");   // both conditions are named
             }
 
-            // -- confirm password ---------------------------------------------
+            // -- confirm password
             if (Validator.IsBlank(txtConfirm.Text))
             {
-                UiTheme.ClearError(lblConfirmError, txtConfirm);
-                ok = false;
+                UiTheme.ClearError(lblConfirmError, txtConfirm);   // "do not match" is useless against an empty box
+                ok = false;                                        // unfinished, so still not submittable
             }
+            // Both boxes hold something now, so comparing them means something.
             else
             {
-                // A pure user interface rule: the second box is never sent anywhere, and the
-                // database could not check it if it wanted to. It exists because a typed
-                // password is masked, so a typo would otherwise lock the new owner out of the
-                // account they just created. Ordinal string equality is correct here - two
-                // passwords that differ only in case or accent ARE different passwords.
+                // Interface only: the second box is never sent anywhere. Ordinal is correct.
                 ok &= Check(txtConfirm.Text == txtPassword.Text, lblConfirmError, txtConfirm,
-                            "The two passwords do not match.");
+                            "The two passwords do not match.");   // neither password is quoted back
             }
 
+            // The fork: everything below applies to a pharmacy owner and to nobody else.
             if (IsPharmacyOwner)
             {
-                // These five rules apply ONLY on the owner path. Running them for a customer
-                // would leave five red labels under a disabled group of boxes the customer is
-                // not being asked to fill in, and the Create button could never go green.
-
-                // Pharmacies.PharmacyName is NOT NULL; as with the personal name, NOT NULL
-                // stops a missing value and this stops an empty one.
+                // Pharmacies.PharmacyName is NOT NULL; this is what stops an empty one.
                 ok &= Check(!Validator.IsBlank(txtShopName.Text), lblShopNameError, txtShopName,
-                            "Enter the trading name of your pharmacy.");
-                // The licence is the whole point of the approval step: the Super Admin checks
-                // this number against the DGDA register before the shop may trade.
-                // Validator.IsLicenseNo only requires six characters, deliberately loosely,
-                // because the real check is a human one. UQ_Pharmacies_License then guarantees
-                // no two shops can claim the same licence - that half IS enforced twice, here
-                // for the message and in the database for the rule.
+                            "Enter the trading name of your pharmacy.");   // the name customers will search on
+                // IsLicenseNo is loose on purpose: the Super Admin does the real DGDA check.
                 ok &= Check(Validator.IsLicenseNo(txtLicenseNo.Text), lblLicenseError, txtLicenseNo,
-                            "Enter your DGDA licence number, for example DGDA-DH-10021.");
-                // cmbArea.Text, not SelectedItem: the box is editable, so an area typed in by
-                // hand is as valid as one picked from the list. Reading SelectedItem would
-                // reject every area that is not already in the database.
+                            "Enter your DGDA licence number, for example DGDA-DH-10021.");   // a worked example, since the rule is loose
+                // cmbArea.Text, not SelectedItem: a typed area is as valid as a listed one.
                 ok &= Check(!Validator.IsBlank(cmbArea.Text), lblAreaError, cmbArea,
-                            "Choose or type the area your shop is in.");
-                // The shop's postal address is NOT NULL in Pharmacies and is what a customer
-                // sees on the pharmacy profile, so it is separate from the owner's personal
-                // address collected above.
+                            "Choose or type the area your shop is in.");   // "or type": the list is not a closed set
+                // The shop's postal address, separate from the owner's personal one above.
                 ok &= Check(!Validator.IsBlank(txtShopAddress.Text), lblShopAddressError, txtShopAddress,
-                            "Enter the full postal address of the shop.");
-                // A shop contact number, not the owner's mobile, so IsMobile is not applied:
-                // pharmacies often publish a landline.
+                            "Enter the full postal address of the shop.");   // "of the shop" separates the two
+                // A shop line rather than the owner's mobile, so IsMobile is not applied.
                 ok &= Check(!Validator.IsBlank(txtShopPhone.Text), lblShopPhoneError, txtShopPhone,
-                            "Enter a contact number for the shop.");
+                            "Enter a contact number for the shop.");   // wording matches the looser rule applied
             }
+            // The customer path has no rules of its own; it cleans up after the owner.
             else
             {
-                // Switching back to Customer has to UNDO whatever the owner path painted.
-                // Without this the red labels and pink boxes from a half filled pharmacy
-                // section would stay on screen under a disabled group, describing rules that
-                // are no longer being applied.
+                // Switching back must undo the red labels and pink boxes the owner path left.
                 foreach (Control child in grpPharmacy.Controls)
                 {
-                    // The loop is driven by the control collection rather than naming each
-                    // label, so a field added to the group later is cleaned up automatically.
-                    // The "Error" name suffix is the convention that identifies a message label
-                    // - the same convention ApplyTheme uses to colour them.
+                    // Driven by the collection, so a field added to the group later is covered.
                     if (child is Label label && label.Name.EndsWith("Error")) label.Visible = false;
-                    // Reset the pink tint ShowError left behind. ClearError is not used here
-                    // because it needs a matching label, and this loop deliberately does not
-                    // try to pair each box with its own message.
+                    // ClearError is not used here: it needs a label paired with each box.
                     if (child is TextBox || child is ComboBox) child.BackColor = Color.White;
                 }
             }
 
-            // Same two lines as every other form in the project: the button state IS the
-            // verdict, and the colour is set explicitly because Enabled alone leaves the fill
-            // looking ready to press.
-            btnCreate.Enabled = ok;
-            btnCreate.BackColor = ok ? UiTheme.Primary : Color.FromArgb(170, 190, 184);
-            return ok;
+            btnCreate.Enabled = ok;   // the button state IS the verdict, on this form as on every other
+            btnCreate.BackColor = ok ? UiTheme.Primary : Color.FromArgb(170, 190, 184);   // a muted green, so it reads as the same control
+            return ok;   // handed back for btnCreate_Click, which re-runs this before writing
         }
 
-        /// <summary>Shows or clears one field's error label and returns the rule's result.</summary>
+        /// <summary>Paints one field's error label and returns the verdict.</summary>
         private bool Check(bool rulePassed, Label errorLabel, Control field, string message)
         {
-            // Returning the same bool that was passed in is what lets a rule be written as one
-            // line at the call site: evaluate, paint the result, feed the verdict into ok.
-            // Fifteen of these would otherwise be fifteen four-line if/else blocks, and the
-            // rule itself would be buried in the middle of each one.
+            // Returning the argument unchanged lets a rule be one line at the call site.
             if (rulePassed) UiTheme.ClearError(errorLabel, field);
-            else UiTheme.ShowError(errorLabel, field, message);
-            return rulePassed;
+            else UiTheme.ShowError(errorLabel, field, message);   // the wording stays with the rule
+            return rulePassed;   // this method paints the result; it decides nothing itself
         }
 
-        // ---------------------------------------------------------------------
-        //  SAVE
-        // ---------------------------------------------------------------------
-
+        // -- SAVE: the only method on this form that writes anything
         private void btnCreate_Click(object sender, EventArgs e)
         {
-            // Re-validate on the way in. The button is only enabled when every rule passes, but
-            // a disabled button stops the mouse and not the keyboard, and this also re-runs the
-            // owner rules if the dropdown was switched after the last keystroke.
+            // A disabled button stops the mouse but not the keyboard, so re-validate here.
             if (!ValidateAll()) return;
 
             Cursor = Cursors.WaitCursor;     // up to four round trips to SQL Server follow
+            // The try opens after the cursor, so the finally always puts the cursor back.
             try
             {
-                // The UNIQUE constraints on Email and Phone are what actually stop
-                // a duplicate account; checking first is only so the user gets a
-                // friendly message instead of a database exception.
-                //
-                // There is a gap between this SELECT and the INSERT below in which another
-                // registration could take the same email. That is exactly why the constraint,
-                // not this check, is the rule: if the race is lost the INSERT fails, the catch
-                // at the bottom reports it, and no duplicate row exists either way.
+                // The UNIQUE constraint is the real rule; this only makes the failure readable.
                 if (_auth.EmailExists(txtEmail.Text))
                 {
+                    // Under the email box, so the user is pointed at the one field to change.
                     UiTheme.ShowError(lblEmailError, txtEmail, "An account with this email already exists.");
-                    // Disable the button by hand. ValidateAll cannot know this, because the
-                    // email is perfectly well formed - it is only unavailable. Field_Changed
-                    // re-enables it the moment the user edits any box, so this is a lock that
-                    // releases itself as soon as the problem is being addressed.
-                    btnCreate.Enabled = false;
+                    btnCreate.Enabled = false;   // a lock Field_Changed releases on the next keystroke
                     return;     // nothing has been written yet, so there is nothing to undo
                 }
 
+                // Only reached if the email was free, so one problem is fixed at a time.
                 if (_auth.PhoneExists(txtPhone.Text))
                 {
-                    // Checked separately from the email so the message lands under the right
-                    // box. A single "those details are taken" sentence would leave the user
-                    // guessing which of the two to change.
+                    // Checked apart from the email so the message lands under the right box.
                     UiTheme.ShowError(lblPhoneError, txtPhone, "This mobile number is already registered.");
-                    btnCreate.Enabled = false;
-                    return;
+                    btnCreate.Enabled = false;   // the same self releasing lock as the email path
+                    return;                      // again nothing written, so nothing to undo
                 }
 
-                // Build the model object from the boxes. Nothing is trimmed here: AuthService
-                // trims every value as it binds the parameters, so the cleaning rule lives with
-                // the INSERT it protects rather than being repeated on each form that writes a
-                // user. Both paths below share this object, because both write a Users row.
+                // Nothing is trimmed here: AuthService trims as it binds the parameters.
                 User user = new User
                 {
-                    FullName = txtFullName.Text,
-                    Email = txtEmail.Text,
-                    Phone = txtPhone.Text,
-                    Address = txtAddress.Text
+                    FullName = txtFullName.Text,   // straight from the box; the service trims it
+                    Email = txtEmail.Text,         // the value both uniqueness checks ran against
+                    Phone = txtPhone.Text,         // already known to be free and 11 digits long
+                    Address = txtAddress.Text      // delivery address for a customer, personal for an owner
                 };
 
+                // The property that drove the rules now picks the path, so the two agree.
                 if (IsPharmacyOwner)
                 {
-                    // Third uniqueness check, owner path only. Done before the Pharmacy object
-                    // is built so nothing is constructed for a registration that cannot be
-                    // written, and once again the real guarantee is UQ_Pharmacies_License.
+                    // Done before the Pharmacy object is built; UQ_Pharmacies_License is the rule.
                     if (_auth.LicenseExists(txtLicenseNo.Text))
                     {
+                        // Worded as belonging to someone else, because the number is not invalid.
                         UiTheme.ShowError(lblLicenseError, txtLicenseNo,
-                            "This licence number is already registered to another pharmacy.");
-                        btnCreate.Enabled = false;
-                        return;
+                            "This licence number is already registered to another pharmacy.");   // a dead end until it is changed
+                        btnCreate.Enabled = false;   // held grey until the user edits something
+                        return;                      // nothing was built for a write that cannot happen
                     }
 
-                    // The shop. Notice what is NOT set here: Status, CommissionRate and
-                    // RegisteredAt. All three have DEFAULT constraints in the table -
-                    // 'Pending', 8.00 and the current time - so the database decides them and
-                    // no form can register a shop that is approved from the start or set its
-                    // own commission rate.
+                    // Status, CommissionRate and RegisteredAt are left to the table DEFAULTs.
                     Pharmacy pharmacy = new Pharmacy
                     {
-                        PharmacyName = txtShopName.Text,
-                        LicenseNo = txtLicenseNo.Text,
-                        Area = cmbArea.Text,
-                        Address = txtShopAddress.Text,
-                        ContactPhone = txtShopPhone.Text
+                        PharmacyName = txtShopName.Text,     // the trading name customers see and search
+                        LicenseNo = txtLicenseNo.Text,       // just checked free, and UNIQUE in the table
+                        Area = cmbArea.Text,                 // .Text, so a hand typed area survives
+                        Address = txtShopAddress.Text,       // the shop's postal address, not the owner's
+                        ContactPhone = txtShopPhone.Text     // a shop line, never held to the mobile format
                     };
 
-                    // One call, one transaction, two rows. The Users row and the Pharmacies row
-                    // are written together inside RegisterPharmacyOwner, so the application can
-                    // never end up with an owner who has no shop or a shop with no owner. The
-                    // plain password is passed rather than a hash because hashing needs a fresh
-                    // salt, and creating the salt is the service's job, not the form's.
+                    // One transaction, two rows: never an owner with no shop, or a shop with no owner.
                     _auth.RegisterPharmacyOwner(user, pharmacy, txtPassword.Text);
 
-                    // The message explains the Pending state in the user's own terms, and names
-                    // the licence number back to them so they can tell at a glance whether they
-                    // typed it correctly. Reading these values off the pharmacy object rather
-                    // than the textboxes keeps the message tied to what was actually saved.
+                    // Read off the saved object, so the message matches what was actually stored.
                     MessageBox.Show(
-                        "Your pharmacy registration has been submitted.\r\n\r\n" +
-                        "Both your account and " + pharmacy.PharmacyName + " are held at status Pending. " +
-                        "The Super Admin will check licence " + pharmacy.LicenseNo + " and approve the shop, " +
-                        "after which you will be able to log in and list your medicines.",
-                        "Submitted for approval", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        "Your pharmacy registration has been submitted.\r\n\r\n" +   // a blank line before the explanation
+                        "Both your account and " + pharmacy.PharmacyName + " are held at status Pending. " +   // BOTH: either one alone would confuse
+                        "The Super Admin will check licence " + pharmacy.LicenseNo + " and approve the shop, " +   // names who acts next
+                        "after which you will be able to log in and list your medicines.",   // and names what unblocks
+                        "Submitted for approval", MessageBoxButtons.OK, MessageBoxIcon.Information);   // Information: queued, not broken
 
-                    // RegisteredEmail is deliberately left empty on this path. A Pending account
-                    // is refused by AuthService.Login, so pre-filling the login form with it
-                    // would only invite an attempt that is certain to be turned away.
+                    // RegisteredEmail stays empty here, because Login refuses a Pending account.
                 }
+                // The customer path: one row, one call, and the account is usable at once.
                 else
                 {
-                    // A customer is written with Status 'Active' inside RegisterCustomer and can
-                    // sign in immediately, which is the whole difference between the two paths.
+                    // RegisterCustomer writes Status 'Active', which is the whole difference.
                     _auth.RegisterCustomer(user, txtPassword.Text);
-                    // Setting this property is what makes LoginForm pre-fill the email box when
-                    // the dialog closes. Trimmed to match what the INSERT actually stored, so
-                    // the pre-filled text is guaranteed to match the row by the = comparison the
-                    // login query uses.
+                    // Trimmed to match what the INSERT stored, so LoginForm's = comparison hits.
                     RegisteredEmail = user.Email.Trim();
 
+                    // Shown AFTER the write, so it can only appear for an account that exists.
                     MessageBox.Show(
-                        "Welcome to PharmaLink, " + user.FullName + ".\r\n\r\n" +
-                        "Your account is active. You can sign in and start ordering right away.",
-                        "Account created", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        "Welcome to PharmaLink, " + user.FullName + ".\r\n\r\n" +   // read off the saved object, not the box
+                        "Your account is active. You can sign in and start ordering right away.",   // mirrors the Pending message opposite
+                        "Account created", MessageBoxButtons.OK, MessageBoxIcon.Information);   // the caption alone answers "did that work?"
                 }
 
-                // Reached only when a registration was actually written. Assigning DialogResult
-                // on a form shown with ShowDialog is itself what closes the window and what the
-                // caller reads to tell success from cancel; Close() is kept for clarity and is
-                // harmless because a form only closes once.
+                // Assigning DialogResult on a modal dialog is itself what closes the window.
                 DialogResult = DialogResult.OK;
-                Close();
+                Close();   // written out as well, so the intent to shut the dialog is explicit
             }
+            // Exception itself, because every failure at this level gets the same treatment.
             catch (Exception ex)
             {
-                // The outermost handler for this user action. It catches both a database that
-                // cannot be reached and a UNIQUE violation from a lost race, and turns either
-                // into a sentence on the form instead of an unhandled exception that would take
-                // the application down with the registration only half explained.
+                // An unreachable database or a lost UNIQUE race becomes a sentence here.
                 UiTheme.ShowError(lblFormMessage, null, "The account could not be created: " + ex.Message);
-                // null as the field: the fault belongs to the form as a whole, not to any one
-                // box, so nothing is tinted pink.
-                lblFormMessage.Visible = true;
-                // ShowError has already made it visible; the repeat is harmless and makes the
-                // intent explicit at the point where the dialog stays open on a failure.
-                // Note there is no Close() here - failing must leave everything the user typed
-                // on screen so they can correct it rather than retype it.
+                lblFormMessage.Visible = true;   // null as the field above, so nothing is tinted pink
+                // No Close() here: a failure must leave what the user typed on screen.
             }
+            // finally, because two of the three exits from this method are early returns.
             finally
             {
-                // Runs on all three paths - success, an early return from a duplicate, and an
-                // exception - so the wait cursor can never be left spinning over a form that
-                // is waiting for the user.
-                Cursor = Cursors.Default;
+                Cursor = Cursors.Default;   // so a wait cursor is never left spinning over the form
             }
         }
 
+        // The cancel path: it writes nothing, so it needs no try block and no wait cursor.
         private void btnBack_Click(object sender, EventArgs e)
         {
-            // Cancel, not OK, is what tells LoginForm that nothing was registered. Nothing has
-            // been written at this point, so there is nothing to roll back, and RegisteredEmail
-            // is still the empty string it was initialised to - which is precisely the flag
-            // LoginForm tests before pre-filling its email box.
+            // Cancel, not OK, is what tells LoginForm that nothing was registered.
             DialogResult = DialogResult.Cancel;
-            Close();
+            Close();   // matches the success path, so the dialog always ends the same way
         }
     }
 }

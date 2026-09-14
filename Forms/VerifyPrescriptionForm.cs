@@ -1,422 +1,301 @@
-using System.Data;                  // DataTable and DataGridViewRow work, the queue is bound to a table
-using System.Drawing;               // Image, Bitmap and Color, for the preview and the row colours
+using System.Data;                  // DataTable and DataGridViewRow: the queue is a bound table
+using System.Drawing;               // Image, Bitmap and Color, for the preview and row colours
 using System.Windows.Forms;         // Form, DataGridView, PictureBox, MessageBox
-using PharmaLinkApp.Helpers;        // UiTheme, so this screen matches the rest of the owner's area
-using PharmaLinkApp.Services;       // PrescriptionService and OrderService, the two data sources
-// File and FileStream come from System.IO, which is in scope through the project's
-// ImplicitUsings setting rather than a using line of its own.
+using PharmaLinkApp.Helpers;        // UiTheme, so this matches the rest of the owner's area
+using PharmaLinkApp.Services;       // PrescriptionService and OrderService, the two sources
+// File and FileStream come from System.IO, in scope through ImplicitUsings.
 
+// All screens share one namespace, so forms open each other by short name.
 namespace PharmaLinkApp.Forms
 {
-    /// <summary>
-    /// Requirement 16. The pharmacy's prescription verification queue.
-    ///
-    /// When an order contains a medicine whose RequiresRx flag is set, it
-    /// appears here with the uploaded image and the doctor's name. Approve or
-    /// Reject sets Prescriptions.VerifyStatus, and an order whose prescription
-    /// is still Pending can never be moved to Confirmed.
-    /// </summary>
+    /// <summary>Requirement 16: the prescription verification queue.</summary>
     public partial class VerifyPrescriptionForm : Form
     {
-        // The prescription queue and the order lines come from two different services,
-        // each owning its own queries. The form joins them on screen rather than in SQL,
-        // because the lines are only needed for the one row the owner is looking at.
+        // Two services, joined on screen rather than in SQL: the lines suit one row only.
         private readonly PrescriptionService _prescriptions = new PrescriptionService();
-        private readonly OrderService _orders = new OrderService();
+        private readonly OrderService _orders = new OrderService();   // only GetOrderItems, and only for the selected row
 
-        // Starts true so the filter handler does nothing while the Load handler populates
-        // the dropdown. Assigning SelectedIndex raises SelectedIndexChanged, which is
-        // wired to Filter_Changed, so without this the queue would be queried before the
-        // filter had settled on its intended value.
+        // True at first, so setting SelectedIndex in Load cannot fire a query too early.
         private bool _loading = true;
 
+        // The constructor runs before the window exists, so every query is left to Load.
         public VerifyPrescriptionForm()
         {
-            // Controls only. The queries live in Load, where a failure can be shown to the
-            // owner instead of breaking construction of the window.
-            InitializeComponent();
+            InitializeComponent();   // controls only; a failed query belongs in Load
         }
 
+        // Load fires once every control exists, so the grid can be filled here.
         private void VerifyPrescriptionForm_Load(object sender, EventArgs e)
         {
-            ApplyTheme();
+            ApplyTheme();   // styling first, so even a failed query lands on a finished window
 
-            // The first three are exactly the values CK_Prescriptions_Status allows, and
-            // "All" is a sentinel translated to an empty string in LoadQueue. Note the
-            // order: unlike the other filters in this project the sentinel is LAST,
-            // because the useful default here is the work still to be done.
+            // The first three are the values the CHECK allows; "All" is a sentinel.
             cmbVerifyStatus.Items.AddRange(new object[] { "Pending", "Approved", "Rejected", "All" });
 
-            // Index 0 is "Pending" on purpose. This screen is a work queue, so it opens
-            // showing what needs a decision rather than the whole history.
-            cmbVerifyStatus.SelectedIndex = 0;
+            cmbVerifyStatus.SelectedIndex = 0;   // "Pending": a work queue opens on what needs doing
 
-            // Lowered only now that the filter holds its intended value, so the call below
-            // is the first query this screen runs.
-            _loading = false;
-            LoadQueue();
+            _loading = false;   // lowered now the filter holds its intended value
+            LoadQueue();        // the one deliberate first query of this screen
         }
 
-        // Presentation only: fonts, colours, grid styling and the one event subscription
-        // that has to be made in code. Kept apart from the data methods so a change of
-        // appearance cannot alter what is approved or rejected.
+        // Presentation only, kept apart from anything that approves or rejects.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Verify Prescriptions");
+            UiTheme.StyleForm(this, "Verify Prescriptions");   // title, background and window rules
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;                    // the dark band above the work area
+            lblTitle.Font = UiTheme.FontTitle;                          // the shared title font
+            lblTitle.ForeColor = Color.White;                           // white is the readable pairing on Primary
+            lblSubtitle.Font = UiTheme.FontSmall;                       // smaller: a subtitle, not a second heading
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);      // dimmed white, so it supports the title
 
-            grpImage.Font = UiTheme.FontHeading;
-            grpImage.ForeColor = UiTheme.Primary;
-            grpImage.BackColor = UiTheme.CardBack;
+            grpImage.Font = UiTheme.FontHeading;      // the caption over the photograph
+            grpImage.ForeColor = UiTheme.Primary;     // brand colour ties the panel to the header band
+            grpImage.BackColor = UiTheme.CardBack;    // a card fill, lifting the preview off the form
 
-            lblOrderItems.Font = UiTheme.FontHeading;
-            lblOrderItems.ForeColor = UiTheme.TextDark;
-            lblDoctor.Font = UiTheme.FontBody;
-            lblDoctor.ForeColor = UiTheme.TextDark;
-            lblImagePath.Font = UiTheme.FontSmall;
-            lblImagePath.ForeColor = UiTheme.TextMuted;
-            lblNote.Font = UiTheme.FontSmall;
-            lblNote.ForeColor = UiTheme.TextMuted;
-            lblStatus.Font = UiTheme.FontSmall;
-            lblStatus.ForeColor = UiTheme.TextMuted;
+            lblOrderItems.Font = UiTheme.FontHeading;      // heading over the order lines grid
+            lblOrderItems.ForeColor = UiTheme.TextDark;    // dark, marking a new section
+            lblDoctor.Font = UiTheme.FontBody;             // a sentence, so the body font
+            lblDoctor.ForeColor = UiTheme.TextDark;        // full strength: part of the decision
+            lblImagePath.Font = UiTheme.FontSmall;         // small: the stored path is reference detail
+            lblImagePath.ForeColor = UiTheme.TextMuted;    // muted, useful only when tracing a file
+            lblNote.Font = UiTheme.FontSmall;              // the standing explanation of this queue
+            lblNote.ForeColor = UiTheme.TextMuted;         // muted: an aside, not an instruction
+            lblStatus.Font = UiTheme.FontSmall;            // the live outstanding count
+            lblStatus.ForeColor = UiTheme.TextMuted;       // neutral, since the wording carries the tone
 
-            UiTheme.StyleSecondary(btnBack);
-            UiTheme.StyleSecondary(btnRefresh);
-            UiTheme.StyleSuccess(btnApprove);
-            UiTheme.StyleDanger(btnReject);
-            UiTheme.StyleGrid(dgvQueue);
-            UiTheme.StyleGrid(dgvOrderItems);
-            dgvQueue.CellFormatting += dgvQueue_CellFormatting;
+            UiTheme.StyleSecondary(btnBack);        // outline, so leaving never competes with deciding
+            UiTheme.StyleSecondary(btnRefresh);     // also secondary: re-reading is a convenience
+            UiTheme.StyleSuccess(btnApprove);       // green, matching an approved row
+            UiTheme.StyleDanger(btnReject);         // red, matching a rejected row
+            UiTheme.StyleGrid(dgvQueue);            // the same grid rules as every other screen
+            UiTheme.StyleGrid(dgvOrderItems);       // the same for the lines grid, so they read as a pair
+            dgvQueue.CellFormatting += dgvQueue_CellFormatting;   // wired here, beside the grid it colours
         }
 
+        // Re-reads the queue: on load, on a filter change and after a decision.
         private void LoadQueue()
         {
-            // The guard that makes the filter safe to wire up before it has been populated.
-            if (_loading) return;
+            if (_loading) return;   // the guard that makes wiring the filter up early safe
 
-            // A failed query leaves the window open showing what it already had, rather
-            // than closing a screen the owner may be part way through working through.
-            try
+            try   // a failed query must leave the window open on what it already had
             {
-                string status = cmbVerifyStatus.SelectedItem.ToString();
+                string status = cmbVerifyStatus.SelectedItem.ToString();   // read once, so it cannot change mid-method
 
-                // "All" becomes an empty string because the query uses the optional-filter
-                // pattern (@VerifyStatus = '' OR p.VerifyStatus = @VerifyStatus). Sending
-                // the word "All" would match no rows, since it is not one of the three
-                // values the column is allowed to hold.
+                // "All" becomes "" because the query uses the optional-filter pattern.
                 if (status == "All") status = "";
 
-                // UserSession.PharmacyId is what scopes this queue to the signed-in owner's
-                // own shop, and it is read from the session rather than from any control on
-                // screen. There is therefore nothing here a user could edit to see another
-                // pharmacy's prescriptions, which are a customer's medical records.
+                // PharmacyId comes from the session, so no control on screen can widen this.
                 DataTable table = _prescriptions.GetQueueForPharmacy(UserSession.PharmacyId, status);
-                dgvQueue.DataSource = table;
+                dgvQueue.DataSource = table;   // binding creates the columns, so renames must follow
 
-                // Columns exist only after a DataSource has been set, so every line below
-                // has to follow the binding. The count check covers the unbound case.
+                // Columns exist only after a DataSource is set; the count covers the unbound case.
                 if (dgvQueue.Columns.Count > 0)
                 {
-                    // Headers are renamed here rather than aliased in the query, so the SQL
-                    // keeps returning the names the C# code indexes cells by.
-                    dgvQueue.Columns["PrescriptionId"].HeaderText = "Rx";
+                    dgvQueue.Columns["PrescriptionId"].HeaderText = "Rx";   // renamed here, so the SQL keeps its names
 
-                    // FillWeight is a proportion, not a pixel count: the grid is in Fill
-                    // mode, so shrinking the two id columns gives the width to the customer
-                    // and doctor names, which are the columns worth reading.
+                    // FillWeight is a proportion in Fill mode, so the ids give width to the names.
                     dgvQueue.Columns["PrescriptionId"].FillWeight = 28;
-                    dgvQueue.Columns["OrderId"].HeaderText = "Order";
-                    dgvQueue.Columns["OrderId"].FillWeight = 40;
-                    dgvQueue.Columns["Customer"].HeaderText = "Customer";
-                    dgvQueue.Columns["DoctorName"].HeaderText = "Prescribing doctor";
+                    dgvQueue.Columns["OrderId"].HeaderText = "Order";        // the number owner and customer both quote
+                    dgvQueue.Columns["OrderId"].FillWeight = 40;             // wider, since order numbers get read aloud
+                    dgvQueue.Columns["Customer"].HeaderText = "Customer";    // renamed, so the heading never depends on the SQL
+                    dgvQueue.Columns["DoctorName"].HeaderText = "Prescribing doctor";   // spelled out, not a database field name
 
-                    // Hidden, not removed from the query. The stored path is carried so
-                    // ShowImage can load the photograph for the selected row, but a column
-                    // of folder paths tells the owner nothing and would crowd out the
-                    // columns that do.
+                    // Hidden, not dropped: ShowImage needs the path, the grid does not.
                     dgvQueue.Columns["ImagePath"].Visible = false;
-                    dgvQueue.Columns["UploadedAt"].HeaderText = "Uploaded";
+                    dgvQueue.Columns["UploadedAt"].HeaderText = "Uploaded";   // makes an old Pending row stand out
 
-                    // "Verification" and "Order status" are deliberately distinct words,
-                    // because the two travel separately: a prescription can be Approved
-                    // while its order is still Placed.
+                    // Two distinct words: an Approved prescription can sit on a Placed order.
                     dgvQueue.Columns["VerifyStatus"].HeaderText = "Verification";
-                    dgvQueue.Columns["OrderStatus"].HeaderText = "Order status";
-                    dgvQueue.Columns["TotalAmount"].HeaderText = "Order total (Tk)";
+                    dgvQueue.Columns["OrderStatus"].HeaderText = "Order status";       // shown beside it, so the pair compares
+                    dgvQueue.Columns["TotalAmount"].HeaderText = "Order total (Tk)";   // currency named once, in the header
                 }
 
-                // A separate query rather than counting the rows above, and that is the
-                // point: it counts every Pending prescription for this pharmacy whatever
-                // the filter is showing. Counting the bound rows instead would report zero
-                // outstanding work the moment the owner filtered to Approved.
+                // A separate count, so filtering to Approved cannot report zero work outstanding.
                 int pending = _prescriptions.CountPending(UserSession.PharmacyId);
 
-                // Two messages rather than "0 prescriptions are pending", because an empty
-                // queue is good news and should read as such. The second names the
-                // consequence, since a pending prescription is what blocks dispatch.
-                lblStatus.Text = pending == 0
-                    ? "Nothing is waiting for verification right now."
+                lblStatus.Text = pending == 0   // two messages, because an empty queue is good news
+                    ? "Nothing is waiting for verification right now."   // an all clear, not a count of zero
+                    // Names the consequence: a Pending prescription is what blocks dispatch.
                     : pending + " prescription(s) are still Pending. Those orders cannot be dispatched until you decide.";
 
-                // Rebinding moves the current row without reliably raising
-                // SelectionChanged, so the image, the lines and both buttons are brought
-                // back into step explicitly. Without this the panel would still describe
-                // the prescription that was selected before the reload.
-                UpdateSelection();
+                UpdateSelection();   // rebinding moves the row without reliably raising SelectionChanged
             }
-            catch (Exception ex)
+            catch (Exception ex)   // a failed read must not close a queue being worked through
             {
+                // DbHelper has already turned the SqlException into a readable sentence.
                 MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
+        // Raised as each cell is painted, so it colours from the row's own data.
         private void dgvQueue_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
-            // RowIndex below zero is the header, which has no data behind it, and the
-            // column check covers the moment before binding. CellFormatting is raised very
-            // often, including during binding itself, so both guards earn their place.
+            // Row -1 is the header, and the event also fires mid-bind with no columns yet.
             if (e.RowIndex < 0 || dgvQueue.Columns.Count == 0) return;
 
-            DataGridViewRow row = dgvQueue.Rows[e.RowIndex];
+            DataGridViewRow row = dgvQueue.Rows[e.RowIndex];   // the row being painted, not the selected one
 
-            // Read from the cell rather than the DataTable, so the colour always matches
-            // the word the owner can actually see on that row.
+            // Read from the cell, so the colour always matches the word on that row.
             object status = row.Cells["VerifyStatus"].Value;
-            if (status == null) return;
+            if (status == null) return;   // unbound mid-rebind; the default colour is the honest answer
 
-            // Applied to the ROW's DefaultCellStyle, so one pass colours the whole row.
-            // Setting e.CellStyle instead would tint only the cell being formatted.
-            switch (status.ToString())
+            switch (status.ToString())   // set on the ROW style, so one pass colours the whole row
             {
-                // Amber for work outstanding, the same amber the order screens use for an
-                // order that has been placed but not yet confirmed.
+                // Amber for work outstanding, the same amber as an order not yet confirmed.
                 case "Pending": row.DefaultCellStyle.BackColor = Color.FromArgb(255, 246, 224); break;
 
-                // The shared green and red from UiTheme, so approved and rejected read the
-                // same way here as delivered and low stock do elsewhere.
+                // The shared green and red, so these read as delivered and low stock do.
                 case "Approved": row.DefaultCellStyle.BackColor = UiTheme.DeliveredBack; break;
-                case "Rejected": row.DefaultCellStyle.BackColor = UiTheme.LowStockBack; break;
+                case "Rejected": row.DefaultCellStyle.BackColor = UiTheme.LowStockBack; break;   // red means blocked
 
-                // No default: VerifyStatus is constrained to those three values, so there
-                // is no fourth case to paint. The grid's own alternating style handles
-                // anything this switch does not touch.
+                // No default: the CHECK constraint allows only those three values.
             }
         }
 
-        // Every change of row has to reload the image, the order lines and both buttons,
-        // so the handler forwards to the single method that does all three.
+        // Every change of row reloads the image, the lines and both buttons together.
         private void dgvQueue_SelectionChanged(object sender, EventArgs e) => UpdateSelection();
 
+        // The one place the right hand panel is built, so its three parts always agree.
         private void UpdateSelection()
         {
-            // CurrentRow rather than SelectedRows[0]: the grid is single select, and
-            // CurrentRow is null rather than throwing when the queue is empty.
-            DataGridViewRow row = dgvQueue.CurrentRow;
+            DataGridViewRow row = dgvQueue.CurrentRow;   // CurrentRow is null on an empty grid, not a throw
 
-            // Disposed FIRST, before anything else can replace it. Every path below either
-            // loads a new photograph or leaves the frame empty, so releasing the old bitmap
-            // here means there is no branch on which one is quietly abandoned.
-            ClearImage();
+            ClearImage();   // disposed first, so no branch below can quietly abandon a bitmap
 
-            // Nothing selected, or a row with no prescription behind it. Both buttons are
-            // disabled together, because approving or rejecting needs a row to act on.
-            if (row == null || row.Cells["PrescriptionId"].Value == null)
+            if (row == null || row.Cells["PrescriptionId"].Value == null)   // nothing selected, or no row behind it
             {
-                dgvOrderItems.DataSource = null;   // clear the lines rather than leave the last row's
-                btnApprove.Enabled = false;
-                btnReject.Enabled = false;
-                return;
+                dgvOrderItems.DataSource = null;   // clear the lines rather than keep the last row's
+                btnApprove.Enabled = false;        // no row means nothing to approve
+                btnReject.Enabled = false;         // disabled together, so the pair is never half live
+                return;                            // nothing else can be filled in without a row
             }
 
-            int orderId = Convert.ToInt32(row.Cells["OrderId"].Value);
+            int orderId = Convert.ToInt32(row.Cells["OrderId"].Value);   // Convert, since the cell value is boxed
 
-            // The order's lines are what make the decision possible: the owner has to see
-            // WHICH medicine needed a prescription before judging whether this photograph
-            // covers it. They are fetched per selection rather than loaded with the queue,
-            // since only one row is being looked at at a time.
+            // The lines make the decision possible: which medicine needed a prescription.
             dgvOrderItems.DataSource = _orders.GetOrderItems(orderId);
 
-            if (dgvOrderItems.Columns.Count > 0)
+            if (dgvOrderItems.Columns.Count > 0)   // same rule: columns exist only once bound
             {
-                dgvOrderItems.Columns["MedicineName"].HeaderText = "Medicine";
-                dgvOrderItems.Columns["Strength"].HeaderText = "Strength";
-                dgvOrderItems.Columns["Quantity"].HeaderText = "Qty";
+                dgvOrderItems.Columns["MedicineName"].HeaderText = "Medicine";   // the name on the shelf
+                dgvOrderItems.Columns["Strength"].HeaderText = "Strength";       // a prescription names one strength
+                dgvOrderItems.Columns["Quantity"].HeaderText = "Qty";            // short, so the width goes to names
 
-                // These are the stored order figures, written at checkout, not today's
-                // shelf prices, so an old order still shows what the customer was charged.
+                // These are the figures stored at checkout, not today's shelf prices.
                 dgvOrderItems.Columns["UnitPrice"].HeaderText = "Unit price (Tk)";
-                dgvOrderItems.Columns["Subtotal"].HeaderText = "Line total (Tk)";
+                dgvOrderItems.Columns["Subtotal"].HeaderText = "Line total (Tk)";   // "line", so it is not read as the order total
             }
 
-            object doctor = row.Cells["DoctorName"].Value;
+            object doctor = row.Cells["DoctorName"].Value;   // object, because the column is nullable
 
-            // DoctorName is nullable in the table, so both null and DBNull are covered: the
-            // first is an unbound cell, the second is a stored NULL. "(not given)" is shown
-            // rather than an empty label, so a missing name reads as a fact about the
-            // upload instead of as a screen that failed to load.
+            // DoctorName is nullable, so null and DBNull are both covered by one test.
             lblDoctor.Text = "Doctor: " + (doctor == null || doctor == DBNull.Value ? "(not given)" : doctor.ToString());
 
-            // The path is read defensively for the same reason, and left as "" when absent
-            // so ShowImage has one kind of empty to test for.
-            string storedPath = row.Cells["ImagePath"].Value == null
-                ? "" : row.Cells["ImagePath"].Value.ToString();
+            string storedPath = row.Cells["ImagePath"].Value == null   // read defensively for the same reason
+                ? "" : row.Cells["ImagePath"].Value.ToString();   // "" rather than null, so ShowImage tests once
 
-            ShowImage(storedPath);
+            ShowImage(storedPath);   // resolves the path and loads it, or explains why it cannot
 
-            string status = row.Cells["VerifyStatus"].Value.ToString();
+            string status = row.Cells["VerifyStatus"].Value.ToString();   // safe: the column is NOT NULL
 
-            // Each button is disabled only for the status it would set, rather than both
-            // being disabled once a decision has been made. That is deliberate: a
-            // prescription rejected by mistake can still be approved afterwards, and an
-            // approval can be withdrawn if the photograph turns out to be for someone else.
-            // What it does prevent is the pointless write of setting a status to itself.
+            // Each button is off only for the status it would set, so a mistake can be undone.
             btnApprove.Enabled = status != "Approved";
-            btnReject.Enabled = status != "Rejected";
+            btnReject.Enabled = status != "Rejected";   // the mirror, so the two rules stay symmetrical
         }
 
+        // Releases the displayed bitmap, before every load and again on the way out.
         private void ClearImage()
         {
-            // Disposed rather than simply replaced. A Bitmap holds unmanaged memory, and an
-            // owner clicking down a queue of twenty prescriptions loads twenty of them.
-            if (picPrescription.Image != null)
+            if (picPrescription.Image != null)   // a Bitmap holds unmanaged memory, so dispose it
             {
-                picPrescription.Image.Dispose();
+                picPrescription.Image.Dispose();   // frees the buffer now, not at some later collection
 
-                // Nulled after disposing, so nothing can repaint an image that has already
-                // been released, which would throw on the next paint.
+                // Nulled after disposing, so nothing can repaint an image already released.
                 picPrescription.Image = null;
             }
         }
 
+        // Turns the stored path into a picture, or a sentence saying why not.
         private void ShowImage(string storedPath)
         {
-            // The database stores a RELATIVE path, so it is resolved against the
-            // application's own folder here. Storing the absolute path the customer's
-            // machine used would break the moment the application ran from anywhere else;
-            // resolving at display time means each installation finds its own copy.
+            // Stored relative and resolved here, so each installation finds its own.
             string fullPath = PrescriptionService.ResolveImagePath(storedPath);
 
-            // The stored value is shown as it is, not the resolved one. It is the value
-            // recorded against the order, so it is the one worth quoting when a file has
-            // to be traced.
-            lblImagePath.Text = storedPath;
+            lblImagePath.Text = storedPath;   // the stored value, since that is what gets traced
 
-            // Two different absences handled by one test: no path recorded at all, and a
-            // path that no longer points at a file. Checked BEFORE opening, so a missing
-            // file is an explanation rather than a caught exception.
+            // One test for two absences: no path recorded, and a path pointing at no file.
             if (string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
             {
-                // The wording separates the row from the file deliberately. The
-                // Prescriptions row is intact and still proves an upload happened; it is
-                // only the copied image that is not in this installation's Uploads folder,
-                // which is what a database restored without that folder looks like.
+                // The row is intact; only the copied image is missing from this Uploads folder.
                 lblImagePath.Text = storedPath + Environment.NewLine +
+                                    // the stored path stays in the message: a search starts there
                                     "(the image file is not on this machine - the row still records where it was uploaded)";
-                return;
+                return;   // leaves the frame empty, which ClearImage already guaranteed
             }
 
-            try
+            try   // decoding can fail on a truncated or non image file, and must not close the queue
             {
-                // Loaded through a stream and copied, so the file is not locked
-                // and can still be replaced by a fresh upload.
-                // Image.FromFile would keep a LOCK on the file for as long as the Image
-                // object lives, so the customer could not replace a blurry prescription
-                // while the owner had it open. Reading through a stream and copying into
-                // a new Bitmap releases the file immediately: both using blocks dispose
-                // at the closing brace, and the Bitmap that survives holds pixels in
-                // memory rather than a handle to disk.
+                // FromFile would LOCK the file; a stream plus a copy releases it at once.
                 using (FileStream stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read))
-                using (Image original = Image.FromStream(stream))
+                using (Image original = Image.FromStream(stream))   // FromStream is the half that avoids the lock
                 {
-                    picPrescription.Image = new Bitmap(original);   // independent copy
+                    picPrescription.Image = new Bitmap(original);   // an independent copy, held as pixels
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex)   // a corrupt file, a locked file and an unsupported format alike
             {
-                // Reported in the path label rather than in a message box. A file that
-                // cannot be decoded is information about that one row, and a modal dialog
-                // would interrupt an owner clicking through a queue.
+                // Reported in the path label: a modal box would interrupt a queue being worked.
                 lblImagePath.Text = "The image could not be opened: " + ex.Message;
             }
         }
 
-        // ---------------------------------------------------------------------
-
+        // Shared by both decision buttons; the status word is the only difference.
         private void SetStatus(string newStatus)
         {
-            // Approve and Reject differ by one word, so they share this method and pass the
-            // status they want. Two near-identical handlers would be two places for the
-            // confirmation wording and the refresh to drift apart.
-            DataGridViewRow row = dgvQueue.CurrentRow;
+            DataGridViewRow row = dgvQueue.CurrentRow;   // the row the owner is looking at
             if (row == null) return;   // nothing selected, so there is nothing to decide
 
-            // Both ids are read from the row before the dialog opens. The prescription id
-            // is what gets updated; the order number is what the owner recognises, so it is
-            // the one quoted in the question below.
+            // Both ids are read before the dialog opens, so a rebind cannot change them.
             int prescriptionId = Convert.ToInt32(row.Cells["PrescriptionId"].Value);
-            int orderId = Convert.ToInt32(row.Cells["OrderId"].Value);
+            int orderId = Convert.ToInt32(row.Cells["OrderId"].Value);   // the number the owner recognises
 
-            // The two messages state the CONSEQUENCE rather than repeating the button's
-            // own word, because that consequence is the part the owner is deciding on:
-            // approving unblocks the Confirm button on that order, rejecting leaves the
-            // order sitting at 'Placed' where it cannot be dispatched.
-            string question = newStatus == "Approved"
-                ? "Approve the prescription on order " + orderId + "?\r\n\r\n" +
+            string question = newStatus == "Approved"   // each message states the consequence, not the button word
+                ? "Approve the prescription on order " + orderId + "?\r\n\r\n" +   // the order number, not the Rx id
+                  // "every" matters: one order can carry more than one prescription.
                   "Once every prescription on the order is approved, the Confirm button on that order becomes usable."
-                : "Reject the prescription on order " + orderId + "?\r\n\r\n" +
+                : "Reject the prescription on order " + orderId + "?\r\n\r\n" +   // the same number on both paths
+                  // Says the rejection is recoverable, so it does not read as cancelling the order.
                   "The order stays at 'Placed' and cannot be dispatched. The customer can upload a clearer photograph.";
 
-            // Confirmed before writing, because this decision is visible to the customer
-            // and affects whether their medicine is sent. Yes and No rather than OK and
-            // Cancel, since the prompt is a question.
+            // Confirmed first, because the customer sees it. Yes/No: this is a question.
             DialogResult answer = MessageBox.Show(question, newStatus + " prescription",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);   // Question: routine, not destructive
 
             if (answer != DialogResult.Yes) return;   // anything else leaves the row untouched
 
-            // The pharmacy id is passed with the prescription id, and the UPDATE joins to
-            // Orders and filters on it, so an owner can only ever change a prescription
-            // that belongs to their own shop. The method returns true only when exactly one
-            // row was affected, which is why the message and the reload sit inside the if:
-            // a false means nothing changed, so claiming success would be a lie.
+            // The UPDATE filters on PharmacyId too, and returns true only if one row changed.
             if (_prescriptions.SetVerifyStatus(prescriptionId, UserSession.PharmacyId, newStatus))
             {
-                // Named in full, because the owner has just been asked about an order
-                // number and is now being told about a prescription number.
+                // Both numbers named, since the question quoted an order and this reports an Rx.
                 lblStatus.Text = "Prescription " + prescriptionId + " on order " + orderId + " is now " + newStatus + ".";
 
-                // Re-queried rather than patched in the grid, so the row colour, the
-                // pending count and the two buttons all come from the database rather than
-                // from an assumption about what the update did. Note this overwrites the
-                // status line just set when the current filter is "Pending", which is
-                // correct: the row has left that filter and the message is replaced by the
-                // new outstanding count.
-                LoadQueue();
+                LoadQueue();   // re-queried, not patched, so colours and counts come from the database
             }
         }
 
-        // Three one-line handlers. The two decisions pass the exact strings
-        // CK_Prescriptions_Status allows, so a typo here would be rejected by the database
-        // rather than stored as an unrecognised status.
+        // The two decisions pass the exact strings CK_Prescriptions_Status allows.
         private void btnApprove_Click(object sender, EventArgs e) => SetStatus("Approved");
-        private void btnReject_Click(object sender, EventArgs e) => SetStatus("Rejected");
+        private void btnReject_Click(object sender, EventArgs e) => SetStatus("Rejected");   // the same one line shape
 
-        // The filter and the Refresh button are wired to this same handler, so both simply
-        // re-run the query with whatever the dropdown currently holds.
+        // The filter and the Refresh button share this handler, so both re-run the query.
         private void Filter_Changed(object sender, EventArgs e) => LoadQueue();
 
+        // Back does more than close, which is why it is a block and not an arrow.
         private void btnBack_Click(object sender, EventArgs e)
         {
-            // The bitmap is released before the window goes. It was created from a stream
-            // rather than taken from the designer, so nothing else owns it, and closing a
-            // form does not dispose an image assigned to a PictureBox at run time.
-            ClearImage();
-            Close();
+            ClearImage();   // closing a form does not dispose an image assigned at run time
+            Close();        // hands control back to the dashboard that opened this with ShowDialog
         }
     }
 }

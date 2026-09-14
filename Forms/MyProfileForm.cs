@@ -4,441 +4,331 @@ using PharmaLinkApp.Helpers;        // UiTheme paints the errors, Validator owns
 using PharmaLinkApp.Models;         // User, the typed object the account row becomes
 using PharmaLinkApp.Services;       // AuthService, the only class here that reaches SQL
 
+// Forms know no SQL, so this screen would survive a change of database.
 namespace PharmaLinkApp.Forms
 {
-    /// <summary>
-    /// Requirements 17, 27 and 30. The same form serves all three roles,
-    /// because "edit my own details and change my own password" is the same job
-    /// whoever is doing it.
-    ///
-    /// Email is read only: it is the login identifier. The password change
-    /// verifies the current password inside the same UPDATE statement, so a
-    /// wrong entry updates no rows and the form reports failure without the
-    /// stored hash ever being compared in memory.
-    /// </summary>
+    /// <summary>Edit my own details and change my own password.</summary>
     public partial class MyProfileForm : Form
     {
-        // One service for the life of the form. It holds no connection of its own:
-        // DbHelper opens and closes one inside every call.
+        // One service for the form's life; DbHelper opens a connection inside each call.
         private readonly AuthService _auth = new AuthService();
 
-        // True while LoadProfile is filling the boxes. Every field raises its changed
-        // handler on assignment, so without this the fill would run a validation pass per
-        // control and could paint red labels over values straight from the database.
-        private bool _loading = true;
+        private bool _loading = true;   // true while LoadProfile is filling the boxes
 
+        // Kept bare: a constructor that throws leaves no window to show the error in.
         public MyProfileForm()
         {
             InitializeComponent();      // build the controls from the Designer file first
-            // Nothing else here. Reading the account waits for the Load event, because a
-            // constructor that throws leaves no window in which to show the error.
         }
 
+        // Load fires after the handle exists, so no unstyled form flashes on screen.
         private void MyProfileForm_Load(object sender, EventArgs e)
         {
             ApplyTheme();       // colours and fonts only, no data
             LoadProfile();      // fills the personal details half from the stored row
 
-            // The fill is over, so changes from here on are the user's and must revalidate.
-            _loading = false;
+            _loading = false;   // changes from here on are the user's, so revalidate
 
-            // Both halves are validated once, deliberately. The profile pass usually
-            // succeeds, because it is judging values that came out of the database, and
-            // leaves Save enabled. The password pass always fails at first, because all
-            // three password boxes are empty, and that is what leaves the Change Password
-            // button off until something is actually typed.
-            ValidateProfile();
-            ValidatePassword();
+            ValidateProfile();    // usually passes: it judges values that came from the DB
+            ValidatePassword();   // always fails first, so the button starts off
         }
 
         // Colours and fonts only. Nothing here reads or writes data.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "My Account");
+            UiTheme.StyleForm(this, "My Account");   // size, icon, background and caption
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;              // the green band every screen wears
+            lblTitle.Font = UiTheme.FontTitle;                    // largest type, so the screen names itself
+            lblTitle.ForeColor = Color.White;                     // the only pairing with enough contrast
+            lblSubtitle.Font = UiTheme.FontSmall;                 // smaller, so the two read as a pair
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);   // pale green: legible but secondary
 
+            // Written as a loop, so the two halves cannot drift apart when one is restyled.
             foreach (GroupBox group in new[] { grpProfile, grpPassword })
             {
-                group.Font = UiTheme.FontHeading;
-                group.ForeColor = UiTheme.Primary;
-                group.BackColor = UiTheme.CardBack;
+                group.Font = UiTheme.FontHeading;        // the caption font; children override it below
+                group.ForeColor = UiTheme.Primary;       // a green caption ties back to the header band
+                group.BackColor = UiTheme.CardBack;      // an off-white card lifts off the background
 
+                // Walked rather than named, so a Designer-added box is picked up for free.
                 foreach (Control child in group.Controls)
                 {
-                    child.Font = UiTheme.FontBody;
-                    child.ForeColor = UiTheme.TextDark;
+                    child.Font = UiTheme.FontBody;       // one body font, so nothing inherits heading size
+                    child.ForeColor = UiTheme.TextDark;  // the default ink, overwritten for errors below
+                    // Told apart by name, so the Designer stays the only place they are declared.
                     if (child is Label label && label.Name.EndsWith("Error"))
                     {
-                        label.Font = UiTheme.FontSmall;
-                        label.ForeColor = UiTheme.Danger;
+                        label.Font = UiTheme.FontSmall;      // smaller: it sits under a box and must not crowd it
+                        label.ForeColor = UiTheme.Danger;    // red is the palette's only "this is wrong"
                     }
                 }
             }
 
-            txtEmail.BackColor = Color.FromArgb(240, 242, 244);
-            lblEmailNote.Font = UiTheme.FontSmall;
-            lblEmailNote.ForeColor = UiTheme.TextMuted;
-            lblHashNote.Font = UiTheme.FontSmall;
-            lblHashNote.ForeColor = UiTheme.TextMuted;
-            lblMemberSince.Font = UiTheme.FontSmall;
-            lblMemberSince.ForeColor = UiTheme.TextMuted;
-            lblStatus.Font = UiTheme.FontSmall;
-            lblStatus.ForeColor = UiTheme.TextMuted;
+            txtEmail.BackColor = Color.FromArgb(240, 242, 244);   // grey, so read-only LOOKS read-only
+            lblEmailNote.Font = UiTheme.FontSmall;                // the note on why email cannot be edited
+            lblEmailNote.ForeColor = UiTheme.TextMuted;           // muted: an explanation, not an instruction
+            lblHashNote.Font = UiTheme.FontSmall;                 // the note about hashing, by the passwords
+            lblHashNote.ForeColor = UiTheme.TextMuted;            // same grey, so both notes read as one voice
+            lblMemberSince.Font = UiTheme.FontSmall;              // role and join date, filled by LoadProfile
+            lblMemberSince.ForeColor = UiTheme.TextMuted;         // context rather than content
+            lblStatus.Font = UiTheme.FontSmall;                   // the quiet line recording the last action
+            lblStatus.ForeColor = UiTheme.TextMuted;              // muted, so success never outshouts an error
 
-            UiTheme.StyleSecondary(btnBack);
-            UiTheme.StylePrimary(btnSaveProfile);
-            UiTheme.StyleAccent(btnChangePassword);
-            btnSaveProfile.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            btnChangePassword.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
+            UiTheme.StyleSecondary(btnBack);              // grey: leaving is not the encouraged action
+            UiTheme.StylePrimary(btnSaveProfile);         // green: the main action of the top half
+            UiTheme.StyleAccent(btnChangePassword);       // a different accent, so the two are never confused
+            btnSaveProfile.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);        // set after StylePrimary, which would overwrite it
+            btnChangePassword.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);     // matched weight, so both read as equals
         }
 
+        // Fills the top half from the database. Called once, from Load, and never again.
         private void LoadProfile()
         {
-            // Read by UserId from the session, not by anything on screen. There is no
-            // account picker on this form and no id field to tamper with, so the only
-            // account it can ever load or write is the one that logged in.
-            //
-            // Note what this query does NOT select: PasswordHash and PasswordSalt. The form
-            // has no use for them, so they never travel to the client at all.
+            // Read by session UserId: no account picker, so only the logged-in row loads.
             User user = _auth.GetUser(UserSession.UserId);
 
-            // A missing row would mean the account was deleted while the session was open.
-            // Returning leaves the boxes empty rather than dereferencing a null.
+            // A null row means the account was deleted mid-session; leave the boxes empty.
             if (user == null) return;
 
-            txtFullName.Text = user.FullName;
+            txtFullName.Text = user.FullName;   // the one name field, and the header uses it
 
-            // Email is filled in but the box is read only, set in the Designer and reinforced
-            // by the grey background applied above. It is the login identifier and it is
-            // UNIQUE, so letting it be edited here would mean letting someone change what
-            // they log in with, and UpdateProfile deliberately does not include the column.
+            // Filled but read only: Email is the UNIQUE login id, so UpdateProfile omits it.
             txtEmail.Text = user.Email;
 
-            txtPhone.Text = user.Phone;
-            txtAddress.Text = user.Address;
+            txtPhone.Text = user.Phone;       // editable, checked against UQ_Users_Phone on save
+            txtAddress.Text = user.Address;   // "" not null: GetUser already flattened DBNull
 
-            // Role and join date shown together, because they answer "is this the right
-            // account" at a glance without needing another screen.
+            // Role and join date together answer "is this the right account" at a glance.
             lblMemberSince.Text = "Signed in as " + user.UserType + "   |   Member since " +
-                                  user.CreatedAt.ToString("dd MMM yyyy");
+                                  user.CreatedAt.ToString("dd MMM yyyy");   // spelled-out month, so 03/04 is unambiguous
 
-            // The same field means two different things depending on who is looking at it.
-            // For a customer the address is the one the checkout will prefill as the
-            // delivery destination, which is worth saying so it is kept current; for an
-            // owner or the Super Admin it is simply personal contact detail. One column,
-            // one form, and only the caption changes.
+            // Same column, different caption: only a customer gets a delivery meaning.
             lblAddress.Text = user.UserType == "Customer"
-                ? "Delivery address (pre-filled at checkout)"
-                : "Your personal address";
+                ? "Delivery address (pre-filled at checkout)"   // says why keeping it current matters
+                : "Your personal address";                      // no delivery meaning for an owner or admin
         }
 
-        // ---------------------------------------------------------------------
-        //  PROFILE
-        // ---------------------------------------------------------------------
+        // ---- PROFILE ----
 
-        // The three editable profile boxes share this handler, so there is one entry
-        // point for "something changed" rather than three that could drift apart.
+        // All three profile boxes share this handler, so there is one entry point.
         private void Profile_Changed(object sender, EventArgs e)
         {
-            // LoadProfile is filling the controls, not the user, so there is nothing to
-            // judge yet.
-            if (_loading) return;
-            ValidateProfile();
+            if (_loading) return;   // LoadProfile is filling the controls, not the user
+            ValidateProfile();      // re-judge on every keystroke, so the button is never stale
         }
 
+        // Judges the three editable boxes, painting a message under each failing field.
         private bool ValidateProfile()
         {
-            bool ok = true;
+            bool ok = true;   // starts true and is only ever narrowed by the rules below
 
-            // &= rather than &&: the right hand side is evaluated every time, so every rule
-            // runs and every failing field gets its red label on the same pass. With &&
-            // the first failure would short circuit the rest and the user would fix one
-            // field only to discover the next.
+            // &= not &&: every rule runs, so every failing field is painted in one pass.
             ok &= Check(!Validator.IsBlank(txtFullName.Text), lblFullNameError, txtFullName,
-                        "Your name cannot be empty.");
+                        "Your name cannot be empty.");   // IsBlank, so a box of spaces fails too
 
-            // The shape rule lives in Validator so the sign up form and this one cannot
-            // disagree about what a mobile number is. Worth being honest about this one:
-            // unlike the price and percentage rules elsewhere, Phone has a UNIQUE
-            // constraint but no CHECK on its shape, so this rule is enforced here alone
-            // rather than twice.
+            // The shape rule lives in Validator, so sign up and this form cannot disagree.
             ok &= Check(Validator.IsMobile(txtPhone.Text), lblPhoneError, txtPhone,
-                        "A mobile number is 11 digits and starts with 01.");
+                        "A mobile number is 11 digits and starts with 01.");   // the message states the rule
 
-            // Required because the customer's checkout prefills the delivery address from
-            // this column, and an order with nowhere to deliver to is not an order.
+            // Required, because the checkout prefills the delivery address from this column.
             ok &= Check(!Validator.IsBlank(txtAddress.Text), lblAddressError, txtAddress,
-                        "Please enter an address.");
+                        "Please enter an address.");   // short: a presence rule has no shape to explain
 
-            // Disabling the button is the real enforcement: an invalid form cannot be
-            // submitted at all, rather than being submitted and then rejected.
+            // Disabling the button is the real enforcement: an invalid form cannot be sent.
             btnSaveProfile.Enabled = ok;
 
-            // Greyed as well, because a disabled button still painted primary green reads
-            // as a broken button rather than a blocked one.
+            // Greyed too, or a disabled green button reads as broken rather than blocked.
             btnSaveProfile.BackColor = ok ? UiTheme.Primary : Color.FromArgb(170, 190, 184);
-            return ok;
+            return ok;   // handed back, so the click handler can repeat the test
         }
 
+        // The Save button for the top half; its first line judges the three boxes again.
         private void btnSaveProfile_Click(object sender, EventArgs e)
         {
-            // Revalidated even though the button is only enabled when valid, because a
-            // keyboard shortcut can raise a click the enabled state did not anticipate.
+            // Revalidated, because a keyboard shortcut can raise a click the button did not.
             if (!ValidateProfile()) return;
 
+            // Wrapped: the Users constraints can still refuse a row this form was happy with.
             try
             {
-                // The UNIQUE constraint on Phone stops two accounts sharing a number,
-                // so the check here is only to give a friendly message first.
-                // Trimmed before the comparison, because the stored value was trimmed on
-                // the way in and " 01712345678" would otherwise read as a different number.
+                // Trimmed, because the stored value was trimmed on the way in.
                 if (PhoneTakenBySomeoneElse(txtPhone.Text.Trim()))
                 {
-                    UiTheme.ShowError(lblPhoneError, txtPhone,
-                        "That mobile number belongs to another account (UQ_Users_Phone).");
-                    return;     // nothing is written, and the typed values stay on screen
+                    UiTheme.ShowError(lblPhoneError, txtPhone,                                 // the message goes under the box, not in a dialog
+                        "That mobile number belongs to another account (UQ_Users_Phone).");     // names the constraint, so the cause is clear
+                    return;     // nothing is written and the typed values stay on screen
                 }
 
-                // UserId from the session again. Email is not passed, so the statement
-                // cannot change the login identifier even by accident: the column is simply
-                // not in the SET list.
+                // Email is not passed, so this cannot change the login identifier by accident.
                 if (_auth.UpdateProfile(UserSession.UserId, txtFullName.Text, txtPhone.Text, txtAddress.Text))
                 {
-                    // The session carries a cached copy of the name for the dashboard
-                    // header. Without this line the header would keep showing the old name
-                    // until the next login, and the screen would look as if the save failed.
-                    // Trimmed to match what the service wrote to the column.
+                    // Without this the dashboard header shows the old name until next login.
                     UserSession.FullName = txtFullName.Text.Trim();
 
-                    // Said twice on purpose: the status line is the quiet record that stays
-                    // on screen, the message box is the acknowledgement that cannot be missed.
+                    // Said twice: a quiet status line, plus a dialog that cannot be missed.
                     lblStatus.Text = "Your details have been saved.";
-                    MessageBox.Show("Your details have been saved.", "PharmaLink",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("Your details have been saved.", "PharmaLink",              // same wording as the status line
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);                      // Information: nothing went wrong
                 }
-                // A false return means the UPDATE matched no row, which for a session that
-                // is logged in should not happen. Nothing is claimed in that case, which is
-                // better than announcing a save that did not occur.
+                // A false return means the UPDATE matched no row, so nothing is claimed.
             }
+            // Only genuine database failures land here; a duplicate phone was handled above.
             catch (Exception ex)
             {
-                // The constraints on Users are the real guarantee and can still refuse a row
-                // this form thought was fine. Showing the message keeps the typed values on
-                // screen so one field can be corrected rather than all three retyped.
+                // Showing the message keeps the typed values on screen for a single fix.
                 MessageBox.Show("Your details could not be saved.\r\n\r\n" + ex.Message,
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);   // Error icon: this really is a failure
             }
         }
 
+        // "Is this number in use by somebody who is not me?" - the own-row problem.
         private bool PhoneTakenBySomeoneElse(string phone)
         {
-            // Re-read rather than compared against the text box, because the box is what is
-            // being changed and cannot say what the stored value was.
+            // Re-read the stored row: the text box no longer holds the old value.
             User current = _auth.GetUser(UserSession.UserId);
 
-            // The user's OWN number is not a clash. Without this test, saving an address
-            // change while leaving the phone alone would be refused as a duplicate of
-            // itself, which is the same "ignore my own row" problem the category and
-            // medicine name checks solve by passing an id to ignore.
+            // The user's OWN number is not a clash, or an address-only save would be refused.
             if (current != null && current.Phone == phone) return false;
 
-            // Only now does a match mean someone else holds it.
-            return _auth.PhoneExists(phone);
+            return _auth.PhoneExists(phone);   // only now does a match mean someone else holds it
         }
 
-        // ---------------------------------------------------------------------
-        //  PASSWORD
-        // ---------------------------------------------------------------------
+        // ---- PASSWORD ----
 
-        // The three password boxes share this handler, so the rules below are applied to
-        // all of them from one place.
+        // The three password boxes share this handler, so the rules apply from one place.
         private void Password_Changed(object sender, EventArgs e)
         {
-            if (_loading) return;
-            ValidatePassword();
+            if (_loading) return;   // the same guard as the profile half: a fill is not an edit
+            ValidatePassword();     // one way in, so the button always matches the boxes
         }
 
+        // Judges the password boxes; "not filled in yet" and "wrong" are treated apart.
         private bool ValidatePassword()
         {
-            bool ok = true;
+            bool ok = true;   // narrowed by each rule; the button needs all of them to pass
 
-            // EMPTY IS NOT WRONG, it is merely incomplete. Each of the three blank branches
-            // below CLEARS the error and sets ok to false, so the button stays off but no
-            // red label nags at a box the user has not reached yet. That is the deliberate
-            // difference from the profile half, where a blank name really is a mistake.
+            // EMPTY IS NOT WRONG: clear the label, keep the button off, and do not nag.
             if (Validator.IsBlank(txtCurrent.Text))
             {
-                UiTheme.ClearError(lblCurrentError, txtCurrent);
-                ok = false;
+                UiTheme.ClearError(lblCurrentError, txtCurrent);   // an untouched box did nothing wrong
+                ok = false;                                        // but it is incomplete, so no button
             }
+            // Something is typed, which is as much as this form can judge.
             else
             {
-                // The current password is never judged here for strength or shape. Whether
-                // it is right is a question only the database can answer, and it is asked
-                // once, at the moment of the write.
+                // Whether it is right is a question only the database can answer.
                 UiTheme.ClearError(lblCurrentError, txtCurrent);
             }
 
-            if (Validator.IsBlank(txtNew.Text))
+            if (Validator.IsBlank(txtNew.Text))   // the same empty-is-not-wrong for the new one
             {
-                UiTheme.ClearError(lblNewError, txtNew);
-                ok = false;
+                UiTheme.ClearError(lblNewError, txtNew);   // no red label over an unreached box
+                ok = false;                                // still incomplete, so still no button
             }
+            // Something has been typed, so now the strength rule is worth applying.
             else
             {
-                // Only once something has been typed is it worth saying it is too weak. The
-                // same rule the sign up form applies, from the same method, so an account
-                // cannot end up with a password this screen would have refused.
+                // The same rule sign up applies, so no account can hold a weaker password.
                 ok &= Check(Validator.IsStrongPassword(txtNew.Text), lblNewError, txtNew,
-                            "The new password needs at least 6 characters and at least one digit.");
+                            "The new password needs at least 6 characters and at least one digit.");   // spells the rule out
             }
 
-            if (Validator.IsBlank(txtConfirm.Text))
+            if (Validator.IsBlank(txtConfirm.Text))   // and once more for the confirmation box
             {
-                UiTheme.ClearError(lblConfirmError, txtConfirm);
-                ok = false;
+                UiTheme.ClearError(lblConfirmError, txtConfirm);   // silent while it is still empty
+                ok = false;                                        // but counted as incomplete
             }
+            // Both new-password boxes now hold something, so they can be compared.
             else
             {
-                // The confirmation box exists because the new password is masked and a typing
-                // mistake would otherwise lock the account out of itself. Comparing the two
-                // in the form is the only place this can be caught: once hashed, two
-                // different passwords are simply two different hashes with nothing to
-                // compare them against.
+                // Once hashed, two different passwords are just two different hashes.
                 ok &= Check(txtConfirm.Text == txtNew.Text, lblConfirmError, txtConfirm,
-                            "The two new passwords do not match.");
+                            "The two new passwords do not match.");   // ordinal compare: case and spacing count
             }
 
-            // Checked last so it can overwrite the strength message with the more specific
-            // one. Without it a user could "change" a password to itself, see a success
-            // message, and reasonably believe something happened. The UPDATE would even
-            // report one row changed, because the new salt makes the stored hash different.
+            // Checked last, so it overwrites the strength message with the specific one.
             if (!Validator.IsBlank(txtNew.Text) && txtNew.Text == txtCurrent.Text)
             {
-                UiTheme.ShowError(lblNewError, txtNew, "The new password must be different from the current one.");
-                ok = false;
+                UiTheme.ShowError(lblNewError, txtNew, "The new password must be different from the current one.");   // this one IS a mistake
+                ok = false;   // and it blocks the write rather than only warning about it
             }
 
-            // The button is off until all three boxes are filled and consistent, which is
-            // what makes the failure the user eventually sees mean one thing only: the
-            // current password was wrong.
+            // Off until all three agree, so the failure left over can mean one thing only.
             btnChangePassword.Enabled = ok;
-            btnChangePassword.BackColor = ok ? UiTheme.Accent : Color.FromArgb(170, 190, 184);
-            return ok;
+            btnChangePassword.BackColor = ok ? UiTheme.Accent : Color.FromArgb(170, 190, 184);   // greyed when off
+            return ok;   // returned, so the click handler can repeat the test
         }
 
+        // The Change Password button: one service call, and much it deliberately skips.
         private void btnChangePassword_Click(object sender, EventArgs e)
         {
-            // Revalidated even though the button is only enabled when valid.
-            if (!ValidatePassword()) return;
+            if (!ValidatePassword()) return;   // revalidated: a shortcut can bypass the button
 
+            // A wrong current password is not an exception, so this try is for DB failures.
             try
             {
-                // THE WHOLE PASSWORD CHANGE IS THIS ONE CALL, and what it does not do
-                // matters as much as what it does.
-                //
-                // The plain text of both passwords goes no further than this method. Inside
-                // ChangePassword the typed current password is hashed with the salt already
-                // stored for this user, and it is that HASH that travels to SQL Server as a
-                // parameter, in the WHERE clause of the UPDATE. So the verification and the
-                // write are a single statement: a wrong current password matches no row,
-                // changes nothing and comes back as false. There is no separate "check the
-                // password" query first, which means there is no window between checking and
-                // writing in which the row could change underneath.
-                //
-                // The new password is hashed with a BRAND NEW salt before it is sent, so
-                // neither password is ever stored, transmitted or written to a log in plain
-                // text, and nothing readable is left behind if the table is ever dumped.
+                // One UPDATE verifies and writes: the old hash sits in its WHERE clause.
                 if (_auth.ChangePassword(UserSession.UserId, txtCurrent.Text, txtNew.Text))
                 {
-                    // Cleared immediately on success, so the plain text does not sit in three
-                    // controls behind an unattended screen. This is also why nothing is kept
-                    // in a field: the only copy was in the boxes, and now there is none.
+                    // Cleared at once, so plain text does not sit behind an unattended screen.
                     txtCurrent.Clear();
-                    txtNew.Clear();
-                    txtConfirm.Clear();
+                    txtNew.Clear();       // cleared too: a correct password is still a secret
+                    txtConfirm.Clear();   // all three, or the one left is the one to be read
 
-                    // Re-run against the now empty boxes, which turns the button back off.
-                    // Without it the button would stay enabled over three empty fields.
-                    ValidatePassword();
+                    ValidatePassword();   // re-run on empty boxes, which turns the button off
 
-                    // Names exactly which two columns moved, so it is clear the rest of the
-                    // account was untouched by a password change.
+                    // Names the two columns that moved, so the rest of the row is clearly safe.
                     lblStatus.Text = "Password updated. Only Users.PasswordHash and Users.PasswordSalt changed.";
-                    MessageBox.Show(
-                        "Your password has been updated.\r\n\r\n" +
-                        "A fresh random salt was generated and the new password was hashed with SHA-256 " +
-                        "before it reached the database.",
-                        "Password changed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(                                                                    // a dialog too, because this must not be missed
+                        "Your password has been updated.\r\n\r\n" +                                     // the plain answer first
+                        "A fresh random salt was generated and the new password was hashed with SHA-256 " +   // a new salt makes the old one useless
+                        "before it reached the database.",                                              // the plain text never left this machine
+                        "Password changed", MessageBoxButtons.OK, MessageBoxIcon.Information);          // Information, since nothing failed
                 }
+                // False, not an exception: the UPDATE simply matched no row.
                 else
                 {
-                    // ChangePassword returned false, which means the UPDATE matched zero
-                    // rows. The UPDATE carried "AND PasswordHash = @OldHash", so the only
-                    // way to match nothing is for the typed current password to be wrong.
-                    //
-                    // Worth noting what did NOT happen: no exception was thrown and no
-                    // separate "check the password" query ran. The verification and the
-                    // write were the same statement, so there was never a moment between
-                    // them where the row could change.
-                    //
-                    // The new password boxes are deliberately left alone: only the box that
-                    // was wrong is challenged, so a correct new password does not have to be
-                    // typed twice again.
+                    // Zero rows matched, so the typed current password must be wrong.
                     UiTheme.ShowError(lblCurrentError, txtCurrent,
-                        "That is not your current password, so nothing was changed.");
-                    txtCurrent.SelectAll();   // select so the retype replaces it
-                    txtCurrent.Focus();       // and put the cursor there, so the retype needs no click
+                        "That is not your current password, so nothing was changed.");   // says nothing changed
+                    txtCurrent.SelectAll();   // select, so the retype replaces it
+                    txtCurrent.Focus();       // cursor there too, so the retype needs no click
                 }
             }
+            // Reached only when the database itself failed, never on a wrong password.
             catch (Exception ex)
             {
-                // Only genuine failures reach here. A wrong password is not an exception, it
-                // is the false branch above, which is why that case gets a field level
-                // message and this one gets a dialog.
+                // A wrong password is the else branch above, which gets a field-level message.
                 MessageBox.Show("The password could not be changed.\r\n\r\n" + ex.Message,
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);   // ex.Message only, no stack trace
             }
         }
 
+        // The show-passwords tick box changes what is drawn and nothing that is stored.
         private void chkShowPasswords_CheckedChanged(object sender, EventArgs e)
         {
-            // '\0' is how WinForms is told "no masking at all"; any other character becomes
-            // the mask. Computed once into a local so all three boxes are guaranteed to
-            // agree, rather than three separate conditionals that could be edited apart.
+            // '\0' means "no masking" in WinForms; one local, so all three boxes agree.
             char mask = chkShowPasswords.Checked ? '\0' : '*';
 
-            // All three, not just the new one. Revealing only some of them would leave the
-            // user comparing a visible string against a masked one, which defeats the point
-            // of the checkbox. The text is only ever unmasked on screen, at the user's own
-            // request, and this changes nothing about what is sent or stored.
+            // All three: revealing only some would defeat the point of the box.
             txtCurrent.PasswordChar = mask;
-            txtNew.PasswordChar = mask;
-            txtConfirm.PasswordChar = mask;
+            txtNew.PasswordChar = mask;       // the same local, so the boxes cannot diverge
+            txtConfirm.PasswordChar = mask;   // the confirmation too, or comparing by eye fails
         }
 
-        // ---------------------------------------------------------------------
+        // ---- SHARED ----
 
-        // One helper shared by both halves of the form, so showing and clearing an error
-        // is written once. It returns the verdict it was given, which is what lets callers
-        // write "ok &= Check(...)" and get the painting and the accumulation in one line.
+        // One helper for both halves, so "ok &= Check(...)" paints and counts in one line.
         private bool Check(bool rulePassed, Label errorLabel, Control field, string message)
         {
-            // Clearing on success matters as much as showing on failure, or a message from
-            // an earlier keystroke would sit under a field that is now correct.
+            // Clearing on success matters too, or a stale message sits under a fixed field.
             if (rulePassed) UiTheme.ClearError(errorLabel, field);
-            else UiTheme.ShowError(errorLabel, field, message);
-            return rulePassed;
+            else UiTheme.ShowError(errorLabel, field, message);   // paints the label and tints the box
+            return rulePassed;                                    // passed back, so the caller can use &=
         }
 
-        // Close, not logout: this form was opened from a dashboard and closing it returns
-        // there with the session intact. Any password text still in the boxes goes with the
-        // form when it is disposed.
+        // Close, not logout: the dashboard that opened this form keeps its session.
         private void btnBack_Click(object sender, EventArgs e) => Close();
     }
 }

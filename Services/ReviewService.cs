@@ -1,329 +1,223 @@
 using System.Data;                  // DataTable, the shape every read on these screens returns
 using PharmaLinkApp.Database;       // DbHelper, the only class that opens a SqlConnection
 
-namespace PharmaLinkApp.Services
+namespace PharmaLinkApp.Services   // all review SQL lives here, never inside a Form
 {
-    /// <summary>
-    /// Ratings and comments (requirements 15, 21, 24 and 8).
-    ///
-    /// A review points back at the order it came from, so only a customer who
-    /// actually received the medicine can rate it, and the UNIQUE constraint on
-    /// (CustomerId, MedicineId, OrderId) stops the same purchase being rated
-    /// twice. Moderation hides a review instead of deleting it.
-    /// </summary>
-    public class ReviewService
+    /// <summary>Ratings, owner reports and Super Admin moderation.</summary>
+    public class ReviewService   // requirements 15, 21, 24 and 8
     {
-        // One helper for the whole class; DbHelper opens and closes a connection per call.
-        private readonly DbHelper _db = new DbHelper();
+        private readonly DbHelper _db = new DbHelper();   // opens and closes a connection per call
 
-        // ---------------------------------------------------------------------
-        //  CUSTOMER
-        // ---------------------------------------------------------------------
+        // ===== CUSTOMER =====
 
-        /// <summary>
-        /// Writes a review, but only when the WHERE EXISTS clause can prove the
-        /// customer bought that medicine on that order and the order has been
-        /// delivered. The form disables the button too, but this is the rule
-        /// that actually holds.
-        /// </summary>
-        // out string message, like the other methods a customer can legitimately fail:
-        // "you have not bought this" is not an error condition, it is an answer, so it
-        // comes back as false plus a sentence rather than as a thrown exception.
+        /// <summary>Writes a review only when the order proves the purchase.</summary>
         public bool AddReview(int customerId, int medicineId, int orderId, int rating, string comment, out string message)
         {
+            // INSERT ... SELECT ... WHERE EXISTS: the proof and the write are one statement.
             const string sql = @"
--- INSERT ... SELECT ... WHERE EXISTS, not INSERT ... VALUES. The row is only written
--- if the EXISTS proves the purchase, so the check and the write are one statement and
--- cannot drift apart. If the proof fails, SELECT returns no rows, nothing is inserted
--- and ExecuteNonQuery returns 0 - no exception, just a refusal.
-INSERT INTO Reviews (CustomerId, MedicineId, OrderId, Rating, Comment)
--- A SELECT with no FROM: the row being inserted is the five parameters themselves, and
--- the WHERE below decides whether that single row exists at all. Reading the order
--- first and then inserting was rejected - between the two the order could be cancelled,
--- and the review would be written against a purchase that no longer stands.
-SELECT  @CustomerId, @MedicineId, @OrderId, @Rating, @Comment
--- EXISTS stops at the first matching row rather than counting them, so it is both the
--- cheapest way to ask the question and the right one: one line on the order is proof.
-WHERE   EXISTS (SELECT 1
-                -- SELECT 1, not SELECT *: EXISTS only cares whether a row came back, so
-                -- there is no reason to make the server materialise any columns.
-                FROM   OrderItems oi
-                       INNER JOIN Orders o ON o.OrderId = oi.OrderId
-                -- All four conditions together are what makes a review VERIFIED:
+INSERT INTO Reviews (CustomerId, MedicineId, OrderId, Rating, Comment)   -- the five columns written
+SELECT  @CustomerId, @MedicineId, @OrderId, @Rating, @Comment   -- no FROM: the row IS the parameters
+-- EXISTS stops at the first matching row, and one order line is proof enough.
+WHERE   EXISTS (SELECT 1   -- SELECT 1, because only whether a row exists matters
+                FROM   OrderItems oi   -- the lines of the order being cited
+                       INNER JOIN Orders o ON o.OrderId = oi.OrderId   -- reaches Status and CustomerId
                 WHERE  oi.OrderId    = @OrderId       -- that order
                   AND  oi.MedicineId = @MedicineId    -- really contained this medicine
                   AND  o.CustomerId  = @CustomerId    -- and the order was YOURS
-                  AND  o.Status      = 'Delivered');";   // and it actually arrived
+                  -- Delivered, so nothing can be rated before it has actually arrived.
+                  AND  o.Status      = 'Delivered');";
 
-            // Wrapped because ONE failure here is not a refusal but a constraint: the
-            // UNIQUE index on (CustomerId, MedicineId, OrderId) throws rather than
-            // returning 0, so it cannot be handled by the rows check below.
+            // Wrapped because the UNIQUE index throws rather than returning zero rows.
             try
             {
-                // The count is captured rather than compared inline, because it has to be
-                // tested twice in effect - once for success and once for the message.
-                int rows = _db.ExecuteNonQuery(sql,
-                    DbHelper.P("@CustomerId", customerId),
-                    DbHelper.P("@MedicineId", medicineId),
-                    DbHelper.P("@OrderId", orderId),
-                    // The 1 to 5 range is enforced by a CHECK constraint on the column,
-                    // so an out-of-range value is refused by the database rather than
-                    // depending on this method remembering to test it.
-                    DbHelper.P("@Rating", rating),
-                    // Not trimmed and not rejected when empty: a rating with no words is a
-                    // perfectly ordinary review, and the column allows NULL.
-                    DbHelper.P("@Comment", comment));
+                int rows = _db.ExecuteNonQuery(sql,   // rows affected: 1 wrote, 0 was refused
+                    DbHelper.P("@CustomerId", customerId),   // who is rating
+                    DbHelper.P("@MedicineId", medicineId),   // what is being rated
+                    DbHelper.P("@OrderId", orderId),   // the order that has to prove it
+                    DbHelper.P("@Rating", rating),   // 1 to 5, held by a CHECK constraint
+                    DbHelper.P("@Comment", comment));   // nullable: a rating with no words is fine
 
                 // Exactly one row means the EXISTS was satisfied and the review is stored.
                 if (rows == 1)
                 {
-                    message = "Thank you, your review has been posted.";
-                    return true;
+                    message = "Thank you, your review has been posted.";   // the caller shows this
+                    return true;   // true means the row really was written
                 }
 
-                // Reached when rows is 0: the statement ran perfectly and deliberately
-                // wrote nothing. The message covers all four ways the proof can fail at
-                // once, because telling a customer WHICH test failed would confirm the
-                // existence of orders that are not theirs.
+                // rows is 0: the statement ran perfectly and deliberately wrote nothing.
                 message = "You can only review a medicine from an order that has been delivered to you.";
-                return false;
+                return false;   // naming which test failed would leak other people's orders
             }
-            catch (Exception ex)
+            catch (Exception ex)   // only a constraint violation can reach here
             {
-                // The UNIQUE constraint fires when the same purchase is rated twice.
-                // DbHelper has already replaced the message with a general sentence, so the
-                // constraint name is no longer in ex.Message. The original SqlException is
-                // kept as InnerException, and its error number is what identifies a
-                // duplicate: 2627 for a UNIQUE constraint, 2601 for a unique index.
+                // 2627 is a UNIQUE constraint and 2601 a unique index: the same purchase twice.
                 if (ex.InnerException is Microsoft.Data.SqlClient.SqlException sqlEx &&
-                    (sqlEx.Number == 2627 || sqlEx.Number == 2601))
-                    message = "You have already reviewed this medicine on this order.";
-                else
-                    // Anything else is passed through rather than swallowed. It is already
-                    // a readable sentence, because DbHelper wrapped the SqlException in a
-                    // DataAccessException before it reached this catch.
-                    message = ex.Message;
-                return false;
+                    (sqlEx.Number == 2627 || sqlEx.Number == 2601))   // the duplicate-review numbers
+                    message = "You have already reviewed this medicine on this order.";   // said plainly
+                else   // anything else is passed through rather than swallowed
+                    message = ex.Message;   // DbHelper already made this a readable sentence
+                return false;   // nothing was stored on either branch
             }
         }
 
-        /// <summary>The medicines on one delivered order that have not been reviewed yet.</summary>
-        // This is what the form uses to populate its list, so the customer is only ever
-        // offered items AddReview would accept. The button being enabled and the insert
-        // succeeding are therefore decided by the same four conditions.
+        /// <summary>The unreviewed medicines on one delivered order.</summary>
         public DataTable GetReviewableItems(int orderId, int customerId)
         {
+            // The same four conditions as AddReview, so the list only offers what it accepts.
             const string sql = @"
-SELECT  m.MedicineId, m.MedicineName, m.Strength, oi.Quantity, oi.UnitPrice
--- Driven from OrderItems rather than from Medicines: the question is 'what did this
--- order contain', so the order lines are the starting point and the medicine is looked
--- up from each one.
-FROM    OrderItems oi
-        INNER JOIN Orders    o ON o.OrderId    = oi.OrderId
-        INNER JOIN Medicines m ON m.MedicineId = oi.MedicineId
-WHERE   oi.OrderId   = @OrderId
+SELECT  m.MedicineId, m.MedicineName, m.Strength, oi.Quantity, oi.UnitPrice   -- what the list shows
+FROM    OrderItems oi   -- driven from the order lines: 'what did this order contain'
+        INNER JOIN Orders    o ON o.OrderId    = oi.OrderId   -- reaches the customer and status
+        INNER JOIN Medicines m ON m.MedicineId = oi.MedicineId   -- resolves a line to a product
+WHERE   oi.OrderId   = @OrderId   -- the single order being reviewed
   AND   o.CustomerId = @CustomerId      -- the order has to be the caller's own
   AND   o.Status     = 'Delivered'      -- and delivered, exactly as AddReview requires
-  -- NOT EXISTS removes the lines already reviewed, so the list shrinks as the customer
-  -- works through it. A LEFT JOIN with a null test would do the same job but would
-  -- duplicate an order line if it somehow had two matching reviews; NOT EXISTS cannot.
-  AND   NOT EXISTS (SELECT 1 FROM Reviews r
-                    -- The same three columns the UNIQUE constraint covers, so 'already
-                    -- reviewed' here means exactly what the constraint would refuse.
-                    WHERE r.OrderId    = oi.OrderId
-                      AND r.MedicineId = oi.MedicineId
-                      AND r.CustomerId = @CustomerId)
+  -- NOT EXISTS drops lines already reviewed; a JOIN could duplicate one.
+  AND   NOT EXISTS (SELECT 1 FROM Reviews r   -- the anti-join that shrinks the list
+                    WHERE r.OrderId    = oi.OrderId   -- the three columns the UNIQUE index covers
+                      AND r.MedicineId = oi.MedicineId   -- so this matches what it would refuse
+                      AND r.CustomerId = @CustomerId)   -- only this customer's own reviews count
+-- Alphabetical, so the customer works down a stable list.
 ORDER BY m.MedicineName;";
 
-            return _db.ExecuteTable(sql,
-                DbHelper.P("@OrderId", orderId),
-                DbHelper.P("@CustomerId", customerId));
+            return _db.ExecuteTable(sql,   // one round trip, bound straight to the list
+                DbHelper.P("@OrderId", orderId),   // which order is being reviewed
+                DbHelper.P("@CustomerId", customerId));   // and whose order it has to be
         }
 
-        /// <summary>
-        /// Requirement 23. Reviews store only a CustomerId, so the join to Users
-        /// is what turns a number into the reviewer's name on screen. Hidden
-        /// reviews are excluded here rather than deleted at source.
-        /// </summary>
-        public DataTable GetForMedicine(int medicineId)
+        /// <summary>The visible reviews for one medicine, newest first.</summary>
+        public DataTable GetForMedicine(int medicineId)   // requirement 23
         {
+            // Reviews store a CustomerId, so the join to Users is what puts a name on screen.
             const string sql = @"
-SELECT  r.ReviewId, u.FullName AS ReviewerName, r.Rating, r.Comment, r.ReviewDate
-FROM    Reviews r
-        INNER JOIN Users     u ON u.UserId     = r.CustomerId
-        -- Medicines is joined for the constraint rather than for a column: it guarantees
-        -- the review points at a medicine that still exists, so a row with a dangling
-        -- reference cannot reach the screen.
-        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId
-WHERE   r.MedicineId = @MedicineId
-  -- The moderation filter. Hidden reviews are excluded by the QUERY, so a review the
-  -- administrator has hidden disappears from every customer screen at once without the
-  -- row being destroyed.
+SELECT  r.ReviewId, u.FullName AS ReviewerName, r.Rating, r.Comment, r.ReviewDate   -- the reader's view
+FROM    Reviews r   -- the question is 'what was said about this medicine'
+        INNER JOIN Users     u ON u.UserId     = r.CustomerId   -- turns the id into a name
+        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId   -- joined for the constraint, not a column
+WHERE   r.MedicineId = @MedicineId   -- one medicine only
+  -- IsHidden = 0: the moderation filter, so hiding clears every customer screen.
   AND   r.IsHidden   = 0
 -- Newest first, which is what a reader of reviews expects.
 ORDER BY r.ReviewDate DESC;";
 
-            return _db.ExecuteTable(sql, DbHelper.P("@MedicineId", medicineId));
+            return _db.ExecuteTable(sql, DbHelper.P("@MedicineId", medicineId));   // one parameter, one trip
         }
 
-        // The star rating printed beside a medicine.
+        /// <summary>The star rating printed beside a medicine.</summary>
         public decimal GetAverageForMedicine(int medicineId)
         {
+            // ExecuteScalarDecimal, because one number comes back rather than a grid.
             return _db.ExecuteScalarDecimal(@"
--- The inner CAST is the one that matters: Rating is an INT, and AVG over integers does
--- integer arithmetic, so four fives and one four would average to 4 rather than 4.80.
--- Casting each rating to DECIMAL first is what keeps the fraction. The outer CAST then
--- rounds the result to two places so the figure is stable wherever it is displayed.
--- ISNULL turns 'no reviews yet' into 0: AVG over no rows is NULL, not zero, and that
--- NULL would otherwise have to be handled again on the C# side.
-SELECT ISNULL(CAST(AVG(CAST(Rating AS DECIMAL(4,2))) AS DECIMAL(4,2)), 0)
--- IsHidden = 0 here as well, so a hidden review stops counting towards the average the
--- moment it is hidden. This is the real reason hiding is a flag and not a deletion.
+-- Rating is an INT, so the inner CAST is what stops AVG doing integer arithmetic.
+SELECT ISNULL(CAST(AVG(CAST(Rating AS DECIMAL(4,2))) AS DECIMAL(4,2)), 0)   -- no reviews means 0, not NULL
+-- IsHidden = 0 here too, so hiding stops a review counting at once.
 FROM   Reviews WHERE MedicineId = @Id AND IsHidden = 0;",
-                DbHelper.P("@Id", medicineId));
+                DbHelper.P("@Id", medicineId));   // one medicine, one number
         }
 
-        // ---------------------------------------------------------------------
-        //  PHARMACY OWNER  (requirement 15 - read only by design)
-        // ---------------------------------------------------------------------
-        // There is no update or delete for an owner anywhere in this class. A shop that
-        // could remove its own bad reviews would make every remaining review worthless,
-        // so the owner's side of this file is deliberately read-only and moderation is
-        // left to the Super Admin methods at the bottom.
+        // ===== PHARMACY OWNER: read only by design =====
 
+        // A shop that could delete its own bad reviews would make every rating worthless.
         public DataTable GetForPharmacy(int pharmacyId, int minRating, int maxRating)
         {
+            // Reviews has no PharmacyId, so Medicines is the bridge from a review to a shop.
             const string sql = @"
-SELECT  r.ReviewId, u.FullName AS ReviewerName, m.MedicineName, m.Strength,
-        -- OrderId is carried so the owner can trace a complaint back to the delivery it
-        -- came from rather than having to take it at face value.
-        r.Rating, r.Comment, r.ReviewDate, r.OrderId
-FROM    Reviews r
-        INNER JOIN Users     u ON u.UserId     = r.CustomerId
-        -- Medicines is the bridge to the shop: Reviews has no PharmacyId, so 'is this
-        -- review about my stock?' is asked of the medicine it was written about.
-        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId
-WHERE   m.PharmacyId = @PharmacyId
-  AND   r.IsHidden   = 0
-  -- A range rather than a single value, so one query serves 'all reviews' as 1 to 5 and
-  -- 'complaints only' as 1 to 2. BETWEEN is inclusive at both ends.
+SELECT  r.ReviewId, u.FullName AS ReviewerName, m.MedicineName, m.Strength,   -- who said it, about what
+        r.Rating, r.Comment, r.ReviewDate, r.OrderId   -- OrderId traces it back to a real delivery
+FROM    Reviews r   -- one row per review written about this shop's stock
+        INNER JOIN Users     u ON u.UserId     = r.CustomerId   -- the reviewer's name
+        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId   -- the bridge carrying PharmacyId
+WHERE   m.PharmacyId = @PharmacyId   -- the isolation rule: this shop's medicines only
+  AND   r.IsHidden   = 0   -- so the owner sees exactly what customers see
+  -- A range: 'all' is 1 to 5, 'complaints' 1 to 2; BETWEEN includes both.
   AND   r.Rating BETWEEN @MinRating AND @MaxRating
+-- Newest first, so a fresh complaint sits at the top.
 ORDER BY r.ReviewDate DESC;";
 
-            return _db.ExecuteTable(sql,
-                DbHelper.P("@PharmacyId", pharmacyId),
-                DbHelper.P("@MinRating", minRating),
-                DbHelper.P("@MaxRating", maxRating));
+            return _db.ExecuteTable(sql,   // one round trip for the whole grid
+                DbHelper.P("@PharmacyId", pharmacyId),   // from UserSession, never from a control
+                DbHelper.P("@MinRating", minRating),   // the bottom of the chosen band
+                DbHelper.P("@MaxRating", maxRating));   // and the top of it
         }
 
-        // The shop's overall score, for the owner's dashboard and the pharmacy listing.
+        /// <summary>The shop's overall score, for the dashboard and listing.</summary>
         public decimal GetAverageForPharmacy(int pharmacyId)
         {
+            // Same double CAST and ISNULL as the per-medicine average, for the same reasons.
             return _db.ExecuteScalarDecimal(@"
--- Same double CAST and same ISNULL as the per-medicine average, for the same two
--- reasons: integer AVG would truncate, and AVG over no rows is NULL rather than 0.
-SELECT  ISNULL(CAST(AVG(CAST(r.Rating AS DECIMAL(4,2))) AS DECIMAL(4,2)), 0)
-FROM    Reviews r
-        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId
--- Averaged across every medicine the shop sells, and hidden reviews excluded here too
--- so a moderated review cannot drag a shop's score down.
+SELECT  ISNULL(CAST(AVG(CAST(r.Rating AS DECIMAL(4,2))) AS DECIMAL(4,2)), 0)   -- integer AVG would truncate
+FROM    Reviews r   -- every review the shop has received
+        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId   -- the bridge to PharmacyId again
+-- Averaged across every medicine the shop sells, hidden reviews excluded.
 WHERE   m.PharmacyId = @Id AND r.IsHidden = 0;",
-                DbHelper.P("@Id", pharmacyId));
+                DbHelper.P("@Id", pharmacyId));   // one shop, one number
         }
 
-        // How many reviews that average is built from. Shown beside it, because 5.0 from
-        // one review and 5.0 from two hundred are not the same claim.
+        // How many reviews the average is built from; 5.0 from one proves little.
         public int CountForPharmacy(int pharmacyId)
         {
+            // ExecuteScalarInt, because a count is a whole number and never a money value.
             return _db.ExecuteScalarInt(@"
-SELECT  COUNT(*)
-FROM    Reviews r INNER JOIN Medicines m ON m.MedicineId = r.MedicineId
--- The identical WHERE clause to GetAverageForPharmacy, so the count and the average are
--- always computed over exactly the same set of rows.
+SELECT  COUNT(*)   -- counting avoids shipping the rows themselves back
+FROM    Reviews r INNER JOIN Medicines m ON m.MedicineId = r.MedicineId   -- the same two tables
+-- The same WHERE as GetAverageForPharmacy, so both cover one set of rows.
 WHERE   m.PharmacyId = @Id AND r.IsHidden = 0;",
-                DbHelper.P("@Id", pharmacyId));
+                DbHelper.P("@Id", pharmacyId));   // the same scope as the average above
         }
 
-        // ---------------------------------------------------------------------
-        //  SUPER ADMIN MODERATION  (requirement 8)
-        // ---------------------------------------------------------------------
+        // ===== SUPER ADMIN MODERATION (requirement 8) =====
 
-        /// <summary>
-        /// The moderation queue. Every row carries the order number that proves
-        /// the purchase, so a review always traces back to a real delivery.
-        /// </summary>
+        /// <summary>The moderation queue, worst and reported reviews first.</summary>
         public DataTable GetModerationQueue(int maxRating, bool includeHidden)
         {
+            // Every row carries the order number, so a review always traces to a delivery.
             const string sql = @"
-SELECT  r.ReviewId, u.FullName AS Reviewer, m.MedicineName, ph.PharmacyName,
-        -- IsHidden is selected as well as filtered on, so the grid can show which rows
-        -- have already been dealt with when the administrator is viewing everything.
-        -- IsReported shows which rows a pharmacy owner has flagged from Customer Reviews.
+SELECT  r.ReviewId, u.FullName AS Reviewer, m.MedicineName, ph.PharmacyName,   -- who, what, which shop
+        -- IsHidden shows rows already dealt with, IsReported ones an owner sent in.
         r.Rating, r.Comment, r.ReviewDate, r.OrderId, r.IsHidden, r.IsReported
-FROM    Reviews r
-        INNER JOIN Users      u  ON u.UserId     = r.CustomerId
-        INNER JOIN Medicines  m  ON m.MedicineId = r.MedicineId
-        -- Three joins deep, because the administrator needs to know which SHOP a review
-        -- concerns and that is only reachable through the medicine.
-        INNER JOIN Pharmacies ph ON ph.PharmacyId = m.PharmacyId
--- Low ratings first as a threshold rather than an exact match: moderation is about
--- complaints, and passing 2 brings back the 1 and 2 star reviews together.
--- A reported review is always in the queue whatever its rating, because an owner can
--- report a five star review too and the Super Admin still has to see it.
+FROM    Reviews r   -- the queue is a list of reviews, so Reviews drives it
+        INNER JOIN Users      u  ON u.UserId     = r.CustomerId   -- the reviewer's name
+        INNER JOIN Medicines  m  ON m.MedicineId = r.MedicineId   -- what the review is about
+        INNER JOIN Pharmacies ph ON ph.PharmacyId = m.PharmacyId   -- three deep, to name the shop
+-- A threshold: 2 covers 1 and 2 stars, and a report queues at any rating.
 WHERE   (r.Rating <= @MaxRating OR r.IsReported = 1)
-  -- The optional filter pattern, reversed: 1 means 'show hidden ones too', 0 leaves only
-  -- the visible ones. This is how the administrator reviews a decision already taken.
+  -- The optional filter reversed: 1 shows hidden rows too, 0 hides them.
   AND   (@IncludeHidden = 1 OR r.IsHidden = 0)
--- Reported reviews first, because someone is waiting on a decision about them.
+-- Reported first, because an owner is waiting on a decision about them.
 ORDER BY r.IsReported DESC, r.ReviewDate DESC;";
 
-            return _db.ExecuteTable(sql,
-                DbHelper.P("@MaxRating", maxRating),
-                DbHelper.P("@IncludeHidden", includeHidden ? 1 : 0));
+            return _db.ExecuteTable(sql,   // one round trip that fills the whole queue grid
+                DbHelper.P("@MaxRating", maxRating),   // the severity band chosen on the form
+                DbHelper.P("@IncludeHidden", includeHidden ? 1 : 0));   // BIT, so the tick box becomes 1 or 0
         }
 
-        /// <summary>
-        /// Hiding sets IsHidden to 1 rather than deleting the row, so the review
-        /// disappears from the customer screens and from every average rating
-        /// calculation, but survives if the pharmacy disputes the decision.
-        /// </summary>
+        /// <summary>Hiding sets IsHidden to 1; the row is never deleted.</summary>
         public bool SetHidden(int reviewId, bool hidden)
         {
+            // One statement both ways, so hiding and unhiding cannot get out of step.
             return _db.ExecuteNonQuery(
-                // One statement for both directions, so hiding and unhiding cannot get
-                // out of step. No PharmacyId in the WHERE, unlike every owner method in
-                // this file - moderation is a Super Admin power and is deliberately not
-                // scoped to a shop; the caller's role is what authorises it.
-                // IsReported goes back to 0 either way: hiding or restoring IS the Super
-                // Admin's decision on the report, so the review leaves the reported list.
+                // IsReported returns to 0 either way: deciding IS the answer to the report.
                 "UPDATE Reviews SET IsHidden = @Hidden, IsReported = 0 WHERE ReviewId = @Id;",
-                DbHelper.P("@Hidden", hidden ? 1 : 0),
-                // The primary key, so this can affect at most one row and == 1 below is
-                // both the write and the proof that the review existed.
-                DbHelper.P("@Id", reviewId)) == 1;
+                DbHelper.P("@Hidden", hidden ? 1 : 0),   // the same method hides and restores
+                DbHelper.P("@Id", reviewId)) == 1;   // a primary key, so == 1 is the write and its proof
         }
 
-        /// <summary>
-        /// A pharmacy owner flags a review about their own shop for the Super Admin.
-        /// It only sets IsReported; the review stays visible until the Super Admin
-        /// decides, so an owner can never remove a review themselves.
-        /// </summary>
+        /// <summary>An owner flags one review about their own shop for the admin.</summary>
         public bool Report(int reviewId, int pharmacyId)
         {
+            // It only sets IsReported, so the review stays visible until the admin decides.
             return _db.ExecuteNonQuery(@"
--- UPDATE ... FROM with a join, because Reviews has no PharmacyId: the medicine is what
--- ties a review to a shop. The PharmacyId test means an owner can only report reviews
--- about their own medicines, even if a different ReviewId were somehow passed in.
-UPDATE  r
-SET     r.IsReported = 1
-FROM    Reviews r
-        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId
-WHERE   r.ReviewId   = @Id
-  AND   m.PharmacyId = @PharmacyId
+-- UPDATE ... FROM with a join, because Reviews has no PharmacyId of its own.
+UPDATE  r   -- the alias, not the table name, is what UPDATE ... FROM targets
+SET     r.IsReported = 1   -- the flag the Super Admin's queue orders on
+FROM    Reviews r   -- the rows being updated
+        INNER JOIN Medicines m ON m.MedicineId = r.MedicineId   -- ties a review to a shop
+WHERE   r.ReviewId   = @Id   -- the single review the owner selected
+  AND   m.PharmacyId = @PharmacyId   -- an owner can only report reviews about their own stock
   -- A hidden review has already been dealt with, so there is nothing left to report.
   AND   r.IsHidden   = 0;",
-                DbHelper.P("@Id", reviewId),
-                DbHelper.P("@PharmacyId", pharmacyId)) == 1;
+                DbHelper.P("@Id", reviewId),   // which review is being flagged
+                DbHelper.P("@PharmacyId", pharmacyId)) == 1;   // == 1 proves the row was this shop's
         }
     }
 }

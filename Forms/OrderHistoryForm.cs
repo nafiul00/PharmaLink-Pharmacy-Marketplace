@@ -3,438 +3,298 @@ using System.Drawing;               // Color, for the status pill and the disabl
 using System.Windows.Forms;         // Form, DataGridView, MessageBox
 using PharmaLinkApp.Helpers;        // UiTheme, including Money for the "Tk 0.00" formatting
 using PharmaLinkApp.Models;         // Pharmacy, used to fill the pharmacy filter
-using PharmaLinkApp.Services;       // OrderService and PharmacyService, the two data sources here
+using PharmaLinkApp.Services;       // OrderService and PharmacyService, the two data sources
 
-namespace PharmaLinkApp.Forms
+namespace PharmaLinkApp.Forms       // presentation, kept apart so the dependency runs one way
 {
-    /// <summary>
-    /// Requirement 27. Past orders with a status pill, the invoice and the Rate
-    /// and Review action.
-    ///
-    /// The CanReview flag comes from the query itself: an order qualifies only
-    /// when its status is 'Delivered' and at least one of its medicines has not
-    /// been reviewed yet. The button follows that flag rather than guessing.
-    /// </summary>
+    /// <summary>Past orders, the invoice, and the Rate and Review action.</summary>
     public partial class OrderHistoryForm : Form
     {
-        // Two services because this screen draws on two areas: the orders themselves and
-        // the list of pharmacies used by the filter. Each service owns its own queries,
-        // so neither form nor service has to know about the other's tables.
-        private readonly OrderService _orders = new OrderService();
-        private readonly PharmacyService _pharmacies = new PharmacyService();
+        private readonly OrderService _orders = new OrderService();             // the orders themselves
+        private readonly PharmacyService _pharmacies = new PharmacyService();   // used once, to fill the filter
 
-        // Starts true, and every filter change is ignored until the Load handler has
-        // finished. Assigning SelectedIndex on a ComboBox raises SelectedIndexChanged,
-        // which is wired to Filter_Changed, so without this flag simply populating the
-        // two dropdowns would fire several queries against half-configured filters.
+        // Starts true: assigning SelectedIndex raises the same event a click does.
         private bool _loading = true;
 
-        public OrderHistoryForm()
+        public OrderHistoryForm()   // no arguments: the customer id comes from UserSession
         {
-            // Builds the controls from the designer file. Nothing else belongs in the
-            // constructor: the data work is done in Load, where an exception can be shown
-            // to the customer instead of breaking construction of the window.
-            InitializeComponent();
+            InitializeComponent();   // designer controls only; data work waits for Load
         }
 
-        private void OrderHistoryForm_Load(object sender, EventArgs e)
+        private void OrderHistoryForm_Load(object sender, EventArgs e)   // runs once the window exists
         {
-            ApplyTheme();
+            ApplyTheme();   // styling first, so the grids are themed before any row arrives
 
-            // "All statuses" sits at index 0 as a sentinel, and the four that follow are
-            // exactly the values CK_Orders_Status allows in the database. Typing them here
-            // rather than querying DISTINCT Status means an empty status still appears in
-            // the filter, which is how a customer discovers they have no cancelled orders
-            // rather than wondering where the option went.
+            // Index 0 is the sentinel; the rest are the values CK_Orders_Status allows.
             cmbStatus.Items.AddRange(new object[] { "All statuses", "Placed", "Confirmed", "Delivered", "Cancelled" });
             cmbStatus.SelectedIndex = 0;   // default to showing everything
 
-            // The same sentinel-at-zero pattern for the pharmacy filter.
-            cmbPharmacy.Items.Add("All pharmacies");
+            cmbPharmacy.Items.Add("All pharmacies");   // the same sentinel-at-zero pattern
 
-            // Only APPROVED pharmacies are listed, which is what the service's name
-            // promises. A pharmacy that was later suspended still appears on the customer's
-            // old orders in the grid; it simply stops being offered as a filter.
+            // Approved shops only; a later-suspended one still shows on old orders.
             foreach (Pharmacy pharmacy in _pharmacies.GetApprovedList())
-                // The id leads the text so SelectedPharmacyId can read it back. A ComboBox
-                // of strings has no hidden value column, so the id travels in the text.
+                // The id leads the text, because a string ComboBox has no hidden value column.
                 cmbPharmacy.Items.Add(pharmacy.PharmacyId + " - " + pharmacy.PharmacyName);
 
-            cmbPharmacy.SelectedIndex = 0;
+            cmbPharmacy.SelectedIndex = 0;   // land on the sentinel, so the screen opens unfiltered
 
-            // Six months is a deliberate default: wide enough that a customer sees recent
-            // orders immediately, narrow enough that a long history does not all load at
-            // once. Refresh widens it to three years when someone is looking further back.
+            // Six months: wide enough to be useful, narrow enough not to load a whole history.
             dtpFrom.Value = DateTime.Today.AddMonths(-6);
-            dtpTo.Value = DateTime.Today;
+            dtpTo.Value = DateTime.Today;   // today, so the range reads as a real period
 
-            // Released only now that every filter holds its intended value, so the single
-            // load below is the first query this screen runs.
-            _loading = false;
-            LoadOrders();
+            _loading = false;   // released now that every filter holds its intended value
+            LoadOrders();   // the one deliberate query of the whole start-up sequence
         }
 
-        // Presentation only: fonts, colours, grid styling and the one event subscription
-        // that has to be made in code. Kept apart from the data methods so a change of
-        // appearance cannot alter behaviour.
+        // Presentation only, so a change of appearance cannot alter behaviour.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "My Orders");
-            StartPosition = FormStartPosition.CenterParent;
+            UiTheme.StyleForm(this, "My Orders");              // shared chrome and the window caption
+            StartPosition = FormStartPosition.CenterParent;    // opened with ShowDialog, so centre it
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;                  // the brand band, identical everywhere
+            lblTitle.Font = UiTheme.FontTitle;                        // the shared title font, not a new one
+            lblTitle.ForeColor = Color.White;                         // the only colour with contrast on green
+            lblSubtitle.Font = UiTheme.FontSmall;                     // a size down, so the two read as a pair
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);    // pale green: legible but secondary
 
-            lblItemsTitle.Font = UiTheme.FontHeading;
-            lblItemsTitle.ForeColor = UiTheme.TextDark;
-            lblNote.Font = UiTheme.FontSmall;
-            lblNote.ForeColor = UiTheme.TextMuted;
-            lblStatus.Font = UiTheme.FontSmall;
-            lblStatus.ForeColor = UiTheme.TextMuted;
+            lblItemsTitle.Font = UiTheme.FontHeading;      // heads the lower grid, so two grids stay distinct
+            lblItemsTitle.ForeColor = UiTheme.TextDark;    // dark, because it sits on the white body
+            lblNote.Font = UiTheme.FontSmall;              // the fixed explanation under the grids
+            lblNote.ForeColor = UiTheme.TextMuted;         // muted, so it never competes with the status line
+            lblStatus.Font = UiTheme.FontSmall;            // the line reporting the count and period total
+            lblStatus.ForeColor = UiTheme.TextMuted;       // muted too, so an update does not read as an error
 
-            UiTheme.StyleSecondary(btnBack);
-            UiTheme.StyleSecondary(btnRefresh);
-            UiTheme.StyleAccent(btnViewInvoice);
-            UiTheme.StylePrimary(btnRateReview);
-            UiTheme.StyleGrid(dgvOrders);
-            UiTheme.StyleGrid(dgvOrderItems);
-            dgvOrders.CellFormatting += dgvOrders_CellFormatting;
+            UiTheme.StyleSecondary(btnBack);          // grey: leaving the screen changes nothing
+            UiTheme.StyleSecondary(btnRefresh);       // grey too, because re-running a query is not a decision
+            UiTheme.StyleAccent(btnViewInvoice);      // accent: viewing a bill is useful but writes nothing
+            UiTheme.StylePrimary(btnRateReview);      // primary, the only action here that creates a record
+            UiTheme.StyleGrid(dgvOrders);             // read-only, full-row select, alternating rows
+            UiTheme.StyleGrid(dgvOrderItems);         // the detail grid gets the same treatment
+            dgvOrders.CellFormatting += dgvOrders_CellFormatting;   // wired in code, beside the grid it paints
         }
 
-        private int SelectedPharmacyId()
+        private int SelectedPharmacyId()   // turns the dropdown text back into the id the query wants
         {
-            // Index 0 is the "All pharmacies" sentinel and -1 is no selection, so both mean
-            // no filter. 0 is returned for that case because the query treats 0 as "every
-            // pharmacy" through its (@PharmacyId = 0 OR ...) clause.
-            if (cmbPharmacy.SelectedIndex <= 0) return 0;
+            if (cmbPharmacy.SelectedIndex <= 0) return 0;   // 0 and -1 both mean no filter, and so does 0
 
-            string text = cmbPharmacy.SelectedItem.ToString();
+            string text = cmbPharmacy.SelectedItem.ToString();   // safe now: index 0 and -1 were handled above
 
-            // The item was built as "3 - Lazz Pharma", so everything before the first space
-            // is the id. Substring by position rather than Split, because the pharmacy name
-            // itself contains spaces.
+            // Built as "3 - Lazz Pharma", so Substring not Split: the name contains spaces.
             return int.Parse(text.Substring(0, text.IndexOf(' ')));
         }
 
         // ---------------------------------------------------------------------
 
-        private void LoadOrders()
+        private void LoadOrders()   // the single read path every filter and button ends at
         {
-            // The guard that makes the filter handlers safe to wire up. Every combo box and
-            // date picker on this screen calls this method, including while the Load
-            // handler is still setting their initial values.
-            if (_loading) return;
+            if (_loading) return;   // the guard that makes the filter handlers safe to wire up
 
-            // A failed query here should leave the window open with whatever it was already
-            // showing, so it is caught and reported rather than allowed to close the form.
+            // A failure should leave the window open showing whatever it already had.
             try
             {
-                // An empty string, not null and not "All statuses", because the query uses
-                // the optional-filter pattern (@Status = '' OR o.Status = @Status). One
-                // query therefore serves both the filtered and the unfiltered case.
-                string status = cmbStatus.SelectedIndex <= 0 ? "" : cmbStatus.SelectedItem.ToString();
+                string status = cmbStatus.SelectedIndex <= 0 ? "" : cmbStatus.SelectedItem.ToString();   // "" is the optional-filter value
 
-                // All four filters go to the database, not to a DataView. Filtering in SQL
-                // means the totals below are computed over exactly the rows on screen, and
-                // a customer with years of orders never pulls them all across the wire.
-                // The customer id comes from the session, so no filter on this screen can
-                // widen the result beyond the signed-in customer's own orders.
+                // All four filters go to SQL, so the totals below cover exactly the rows shown.
                 DataTable table = _orders.GetHistoryForCustomer(
-                    UserSession.UserId, status, SelectedPharmacyId(), dtpFrom.Value, dtpTo.Value);
+                    UserSession.UserId, status, SelectedPharmacyId(), dtpFrom.Value, dtpTo.Value);   // the session id leads, so ownership is settled first
 
-                // Binding replaces the previous contents outright, so there is nothing to
-                // clear first, and the grid generates one column per column in the table.
-                dgvOrders.DataSource = table;
+                dgvOrders.DataSource = table;   // binding replaces the previous contents outright
 
-                // The columns only exist once a DataSource has been set, so every rename
-                // below has to happen after the assignment above. The count is checked
-                // because an unbound grid would throw on the first indexer.
-                if (dgvOrders.Columns.Count > 0)
+                if (dgvOrders.Columns.Count > 0)   // the columns exist only after the bind above
                 {
-                    // Headers are renamed rather than aliased in SQL, so the query keeps
-                    // returning the column names the C# code indexes by.
+                    // Headers are renamed here, so the query keeps the names the C# indexes by.
                     dgvOrders.Columns["OrderId"].HeaderText = "Invoice";
 
-                    // FillWeight is a proportion, not a pixel width. The grid is in Fill
-                    // mode, so narrowing the short numeric columns hands the space to the
-                    // pharmacy name, which is the one that actually needs it.
-                    dgvOrders.Columns["OrderId"].FillWeight = 45;
-                    dgvOrders.Columns["OrderDate"].HeaderText = "Placed on";
-                    dgvOrders.Columns["PharmacyName"].HeaderText = "Pharmacy";
+                    dgvOrders.Columns["OrderId"].FillWeight = 45;                   // a proportion, not pixels: the grid is in Fill mode
+                    dgvOrders.Columns["OrderDate"].HeaderText = "Placed on";        // plain English, not a column name
+                    dgvOrders.Columns["PharmacyName"].HeaderText = "Pharmacy";      // the longest column, and the one given the room
 
-                    // "Lines" rather than "Items": the figure is COUNT(OrderItemId), so two
-                    // boxes of one medicine count once. Naming it Items would read as units.
+                    // "Lines", because the figure is COUNT(OrderItemId), not a count of units.
                     dgvOrders.Columns["Items"].HeaderText = "Lines";
-                    dgvOrders.Columns["Items"].FillWeight = 34;
+                    dgvOrders.Columns["Items"].FillWeight = 34;   // one or two digits, so the narrowest column
 
-                    // The currency is put in the header instead of formatting every cell,
-                    // which keeps the figures themselves plain and comparable down a column.
+                    // The currency sits in the header, so the figures stay plain and comparable.
                     dgvOrders.Columns["ItemsTotal"].HeaderText = "Items (Tk)";
-                    dgvOrders.Columns["DeliveryCharge"].HeaderText = "Delivery";
-                    dgvOrders.Columns["DeliveryCharge"].FillWeight = 45;
-                    dgvOrders.Columns["TotalAmount"].HeaderText = "Paid (Tk)";
-                    dgvOrders.Columns["PaymentMethod"].HeaderText = "Method";
-                    dgvOrders.Columns["Status"].HeaderText = "Status";
-                    dgvOrders.Columns["Status"].FillWeight = 50;
+                    dgvOrders.Columns["DeliveryCharge"].HeaderText = "Delivery";      // a per-order charge, not a product price
+                    dgvOrders.Columns["DeliveryCharge"].FillWeight = 45;              // a small fixed figure, so it stays narrow
+                    dgvOrders.Columns["TotalAmount"].HeaderText = "Paid (Tk)";        // what actually left the customer's pocket
+                    dgvOrders.Columns["PaymentMethod"].HeaderText = "Method";         // short: the values are already short words
+                    dgvOrders.Columns["Status"].HeaderText = "Status";                // renamed to itself, so no raw name slips through
+                    dgvOrders.Columns["Status"].FillWeight = 50;                      // one word, and the colour does the rest
 
-                    // Hidden, not dropped from the query. CanReview is carried for the
-                    // button decision in UpdateSelection, and a customer has no use for a
-                    // column of 1s and 0s. Selecting it and hiding it is what lets the
-                    // button follow the database's own answer instead of a local guess.
+                    // Hidden, not dropped: UpdateSelection needs CanReview to set the button.
                     dgvOrders.Columns["CanReview"].Visible = false;
                 }
 
-                // The period total, accumulated in C# rather than asked of the database,
-                // because the rows are already here and a second round trip would only
-                // re-read what is on screen. 0m, not 0, so the sum stays decimal throughout
-                // and never picks up the rounding error a double would introduce to money.
-                decimal lifetime = 0m;
+                decimal lifetime = 0m;   // 0m, so money stays decimal and never picks up double rounding
+                // Walks the bound table, not the grid, so the total covers the data itself.
                 foreach (DataRow row in table.Rows)
-                    // Two conditions. DBNull is checked because Convert.ToDecimal would
-                    // throw on it, and cancelled orders are left out because the customer
-                    // never paid for them: including them would overstate what was spent.
+                    // DBNull would throw in Convert, and cancelled orders were never paid for.
                     if (row["TotalAmount"] != DBNull.Value && row["Status"].ToString() != "Cancelled")
-                        lifetime += Convert.ToDecimal(row["TotalAmount"]);
+                        lifetime += Convert.ToDecimal(row["TotalAmount"]);   // Convert, since the provider picks the type
 
-                // The status line names the PERIOD as well as the figure, so a small total
-                // reads as the effect of the date filter rather than as missing orders.
+                // Naming the period stops a small total reading as missing orders.
                 lblStatus.Text = table.Rows.Count + " order(s) between " +
-                                 dtpFrom.Value.ToString("dd MMM yyyy") + " and " +
-                                 dtpTo.Value.ToString("dd MMM yyyy") +
-                                 ".   Total spent in this period: " + UiTheme.Money(lifetime) + ".";
+                                 dtpFrom.Value.ToString("dd MMM yyyy") + " and " +      // spelled out, so 03/04 is unambiguous
+                                 dtpTo.Value.ToString("dd MMM yyyy") +                  // the same format at both ends
+                                 ".   Total spent in this period: " + UiTheme.Money(lifetime) + ".";   // Money adds Tk and two decimals
 
-                // Rebinding moves the selection, which does not reliably raise
-                // SelectionChanged, so the detail grid and the two buttons are brought back
-                // into step explicitly. Without this they would still describe the row that
-                // was selected before the reload.
-                UpdateSelection();
+                UpdateSelection();   // rebinding moves the selection without reliably raising the event
             }
-            catch (Exception ex)
+            catch (Exception ex)   // the screen is the layer that can tell the customer
             {
-                MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);   // DbHelper already made it readable
             }
         }
 
-        /// <summary>The status pill: delivered green, cancelled grey, waiting amber.</summary>
+        /// <summary>Status pill: delivered green, cancelled grey, waiting amber.</summary>
         private void dgvOrders_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
-            // A RowIndex below zero is the header row, which has no data row behind it, and
-            // the column check covers the moment before anything is bound. CellFormatting
-            // is raised very often, including during binding, so both guards matter.
-            if (e.RowIndex < 0 || dgvOrders.Columns.Count == 0) return;
+            if (e.RowIndex < 0 || dgvOrders.Columns.Count == 0) return;   // -1 is the header; this fires during binding too
 
-            DataGridViewRow row = dgvOrders.Rows[e.RowIndex];
+            DataGridViewRow row = dgvOrders.Rows[e.RowIndex];   // the tint is applied to the row, not one cell
 
-            // Read from the Status CELL rather than from the DataTable, so the colour
-            // always matches the text the customer can actually see in that row.
+            // Read from the CELL, so the colour always matches the text the customer sees.
             object status = row.Cells["Status"].Value;
             if (status == null) return;   // a row still being built has no value yet
 
-            // The colour is set on the ROW's DefaultCellStyle, not on e.CellStyle, so one
-            // pass paints the whole row. Doing it per cell would tint whichever cell
-            // happened to be formatted and leave the rest of the row white.
-            switch (status.ToString())
+            switch (status.ToString())   // set on the row's style, so one pass paints the whole row
             {
-                // Green for finished business, and the same green the low-stock and
-                // verified screens use, so one colour means one thing across the project.
+                // Green for finished business, the same green the other screens use.
                 case "Delivered": row.DefaultCellStyle.BackColor = UiTheme.DeliveredBack; break;
 
-                // Grey reads as inactive rather than as a warning: a cancelled order is not
-                // a problem to act on, it is simply no longer live.
+                // Grey reads as inactive: a cancelled order is not a problem to act on.
                 case "Cancelled": row.DefaultCellStyle.BackColor = Color.FromArgb(240, 240, 240); break;
 
-                // Amber for an order that has been placed but not yet confirmed, which is
-                // the state where the customer may still be waiting on something.
+                // Amber for placed but not yet confirmed, where the customer may be waiting.
                 case "Placed": row.DefaultCellStyle.BackColor = Color.FromArgb(255, 246, 224); break;
 
-                // Confirmed falls through to here. It is explicitly repainted white rather
-                // than left alone, because a recycled row object would otherwise keep the
-                // colour of whatever status it displayed before.
+                // Confirmed lands here, repainted white because grid rows are recycled.
                 default: row.DefaultCellStyle.BackColor = Color.White; break;
             }
         }
 
-        // Every change of the selected order has to redraw the lines and re-decide both
-        // buttons, so the handler simply forwards to the one method that does it.
+        // Changing the selected order redraws the lines and re-decides both buttons.
         private void dgvOrders_SelectionChanged(object sender, EventArgs e) => UpdateSelection();
 
-        private void UpdateSelection()
+        private void UpdateSelection()   // also called from LoadOrders, so a click and a rebind agree
         {
-            // CurrentRow rather than SelectedRows[0], because the grid is in full-row
-            // single-select mode and CurrentRow is null rather than throwing when empty.
-            DataGridViewRow row = dgvOrders.CurrentRow;
+            DataGridViewRow row = dgvOrders.CurrentRow;   // null rather than throwing when nothing is selected
 
-            // Nothing selected, or a row that has no order behind it yet. Everything is
-            // put back to its empty state in one place, so there is no path on which a
-            // stale list of lines is left beside a disabled button.
+            // The empty state is restored in one place, so nothing stale is left over.
             if (row == null || row.Cells["OrderId"].Value == null)
             {
                 dgvOrderItems.DataSource = null;   // clear the lines, do not leave the last order's
-                btnViewInvoice.Enabled = false;
-                btnRateReview.Enabled = false;
+                btnViewInvoice.Enabled = false;    // no order selected, so there is no bill to open
+                btnRateReview.Enabled = false;     // and nothing to review either
                 btnRateReview.Text = "Rate and review";   // back to the neutral caption
-                return;
+                return;   // early exit, so everything below can assume a real order row
             }
 
-            int orderId = Convert.ToInt32(row.Cells["OrderId"].Value);
+            int orderId = Convert.ToInt32(row.Cells["OrderId"].Value);   // the key the detail query travels on
 
-            // The lines are fetched on selection rather than loaded with the list. A
-            // customer looks at one order at a time, so this is one small query instead of
-            // every line of every order in the period.
+            // Fetched on selection: one small query rather than every line of every order.
             dgvOrderItems.DataSource = _orders.GetOrderItems(orderId);
 
-            // Again, the columns exist only after binding.
-            if (dgvOrderItems.Columns.Count > 0)
+            if (dgvOrderItems.Columns.Count > 0)   // again, the columns exist only after binding
             {
-                dgvOrderItems.Columns["MedicineName"].HeaderText = "Medicine";
-                dgvOrderItems.Columns["Strength"].HeaderText = "Strength";
-                dgvOrderItems.Columns["Quantity"].HeaderText = "Qty";
+                dgvOrderItems.Columns["MedicineName"].HeaderText = "Medicine";   // the name the customer recognises
+                dgvOrderItems.Columns["Strength"].HeaderText = "Strength";       // 500mg and 250mg are different products
+                dgvOrderItems.Columns["Quantity"].HeaderText = "Qty";            // abbreviated: one or two digits
 
-                // "paid", not "price": OrderItems.UnitPrice is what was charged at
-                // checkout, so a bill from before a price change still shows the old
-                // figure. The header says so to stop it being read as today's price.
+                // "paid", because OrderItems.UnitPrice is what was charged at checkout.
                 dgvOrderItems.Columns["UnitPrice"].HeaderText = "Unit price paid (Tk)";
-                dgvOrderItems.Columns["Subtotal"].HeaderText = "Line total (Tk)";
+                dgvOrderItems.Columns["Subtotal"].HeaderText = "Line total (Tk)";   // stored on the row, so it cannot drift
             }
 
-            // An invoice exists for every order whatever its status, including a cancelled
-            // one, so this button needs no condition beyond having a row selected.
-            btnViewInvoice.Enabled = true;
+            btnViewInvoice.Enabled = true;   // every order has an invoice, cancelled ones included
 
-            // CanReview is NOT worked out here. It is a column the query itself
-            // computed with a CASE plus a correlated NOT EXISTS: the order must be
-            // Delivered AND still contain at least one medicine this customer has not
-            // reviewed. Doing it in SQL means the button cannot disagree with what
-            // ReviewService.AddReview will actually allow, because both ask the
-            // database the same question.
-            //
-            // The column is hidden in the grid (Visible = false) - it is carried for
-            // this decision, not for display.
-            //
-            // The button is a convenience, not the rule. What actually stops a second
-            // review of the same purchase is the UNIQUE constraint UQ_Reviews_OneEach on
-            // (CustomerId, MedicineId, OrderId), which holds even if two copies of this
-            // screen are open at once and both still show the button as enabled.
+            // CanReview comes from the query, so the button cannot disagree with it.
             bool canReview = row.Cells["CanReview"].Value != DBNull.Value &&
-                             Convert.ToInt32(row.Cells["CanReview"].Value) == 1;
+                             Convert.ToInt32(row.Cells["CanReview"].Value) == 1;   // the CASE returns 1 or 0, not a bool
 
-            // The status is read separately because it is what distinguishes the two
-            // reasons a review is not possible, and the caption below has to say which.
-            string status = row.Cells["Status"].Value.ToString();
+            string status = row.Cells["Status"].Value.ToString();   // read separately, because the caption names the reason
 
-            btnRateReview.Enabled = canReview;
+            btnRateReview.Enabled = canReview;   // the database's answer drives the button directly
 
-            // Set alongside Enabled, because a button given a custom BackColor by the theme
-            // keeps that colour when disabled and would otherwise still look pressable.
+            // Set alongside Enabled, or a themed button still looks pressable when disabled.
             btnRateReview.BackColor = canReview ? UiTheme.Primary : Color.FromArgb(170, 190, 184);
 
-            // Three captions for three states. A disabled button with no explanation reads
-            // as a fault, so the caption itself carries the reason: not delivered yet
-            // (wait), or already reviewed (nothing left to do).
+            // Three captions, so a disabled button carries its own reason.
             if (canReview) btnRateReview.Text = "Rate and review";
-            else if (status != "Delivered") btnRateReview.Text = "Not delivered yet";
-            else btnRateReview.Text = "Already reviewed";
+            else if (status != "Delivered") btnRateReview.Text = "Not delivered yet";   // tested first: it outranks the other reason
+            else btnRateReview.Text = "Already reviewed";   // delivered, but every medicine is already rated
         }
 
-        private int SelectedOrderId()
+        private int SelectedOrderId()   // one answer to "which order", so the handlers below stay short
         {
-            // 0 stands for "no order", which is why the callers can test the result rather
-            // than repeating the null check on CurrentRow themselves. OrderId is an
-            // IDENTITY starting at 1001, so 0 can never collide with a real order.
-            if (dgvOrders.CurrentRow == null) return 0;
+            if (dgvOrders.CurrentRow == null) return 0;   // OrderId starts at 1001, so 0 can never collide
 
-            // Convert.ToInt32 rather than a cast, because the cell holds a boxed value
-            // whose exact numeric type comes from the provider.
+            // Convert, not a cast: the cell holds a boxed value whose type the provider picks.
             return Convert.ToInt32(dgvOrders.CurrentRow.Cells["OrderId"].Value);
         }
 
         // ---------------------------------------------------------------------
 
-        private void btnViewInvoice_Click(object sender, EventArgs e)
+        private void btnViewInvoice_Click(object sender, EventArgs e)   // also serves the double click below
         {
-            int orderId = SelectedOrderId();
+            int orderId = SelectedOrderId();   // 0 when nothing is selected, which the guard turns into a no-op
 
-            // Re-checked rather than trusted, because this handler is also called from the
-            // double click below, where no button state stood in the way.
+            // Re-checked: the double click reaches here with no button state in the way.
             if (orderId == 0) return;
 
-            // using, so the invoice window's resources are released when it closes. A
-            // modal dialog is not disposed for you simply because it was closed.
-            using (InvoiceForm invoice = new InvoiceForm(orderId))
+            using (InvoiceForm invoice = new InvoiceForm(orderId))   // a closed modal dialog is still not disposed
             {
-                // ShowDialog(this) rather than Show(), so the history cannot be changed
-                // underneath the bill while it is open, and the bill stays on top of its
-                // parent instead of getting lost behind it.
+                // ShowDialog, so the history cannot change underneath the open bill.
                 invoice.ShowDialog(this);
             }
         }
 
-        private void dgvOrders_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        private void dgvOrders_CellDoubleClick(object sender, DataGridViewCellEventArgs e)   // the shortcut a grid invites
         {
-            // Double clicking the header would arrive with RowIndex -1, which is not a row
-            // and must not open anything.
-            if (e.RowIndex < 0) return;
+            if (e.RowIndex < 0) return;   // the header arrives as -1, which is not a row
 
-            // Deliberately calls the button's own handler rather than repeating its body,
-            // so the double click and the button can never drift apart. EventArgs.Empty is
-            // passed because neither argument is used by that handler.
+            // Calls the button's handler rather than repeating it, so the two cannot drift.
             btnViewInvoice_Click(sender, EventArgs.Empty);
         }
 
-        private void btnRateReview_Click(object sender, EventArgs e)
+        private void btnRateReview_Click(object sender, EventArgs e)   // enabled only when the query allowed it
         {
-            int orderId = SelectedOrderId();
+            int orderId = SelectedOrderId();   // the same helper the invoice button uses
             if (orderId == 0) return;   // nothing selected, so there is nothing to rate
 
-            using (GiveRatingForm rating = new GiveRatingForm(orderId))
+            using (GiveRatingForm rating = new GiveRatingForm(orderId))   // a modal dialog still needs disposing
             {
-                // OK is returned only when a review was actually written. The dialog
-                // reports its own outcome in a message box, so this line adds the one
-                // thing it cannot say: where the review has now appeared.
+                // OK only when a review was written; this line adds where it now appears.
                 if (rating.ShowDialog(this) == DialogResult.OK)
-                    lblStatus.Text = "Thank you - your review is now visible on the medicine's details screen.";
+                    lblStatus.Text = "Thank you - your review is now visible on the medicine's details screen.";   // names the destination screen
             }
 
-            // Reloaded unconditionally, outside the if. The list has to be re-queried so
-            // CanReview is recomputed, which is what turns the button into "Already
-            // reviewed" without the customer refreshing. Running it on cancel too costs
-            // one query and keeps a single exit path.
+            // Reloaded unconditionally, so CanReview is recomputed and the caption catches up.
             LoadOrders();
         }
 
-        // The four filters share one handler, so the reload rule lives in a single place.
-        // The _loading guard inside LoadOrders is what makes it safe to attach these
-        // before the dropdowns have been populated.
+        // The four filters share one handler, and the _loading guard makes that safe.
         private void Filter_Changed(object sender, EventArgs e) => LoadOrders();
 
-        private void btnRefresh_Click(object sender, EventArgs e)
+        private void btnRefresh_Click(object sender, EventArgs e)   // also widens and clears the filters
         {
-            // Raised before the four assignments below, because each of them raises a
-            // change event. Without it this handler would run five queries instead of one,
-            // and four of them against half-reset filters.
-            _loading = true;
+            _loading = true;   // raised first, or the four assignments below would run five queries
 
-            // Three years, not the six months used at startup. Refresh is what a customer
-            // reaches for when an order they expected is missing, so it widens the window
-            // rather than restoring the narrower default.
+            // Three years, not six months: Refresh is reached for when an order seems missing.
             dtpFrom.Value = DateTime.Today.AddYears(-3);
-            dtpTo.Value = DateTime.Today;
+            dtpTo.Value = DateTime.Today;   // the upper end stays today, so it widens backwards only
 
-            // Both dropdowns go back to their sentinel, so Refresh clears every filter
-            // rather than only the dates.
+            // Both dropdowns go back to their sentinel, so Refresh clears every filter.
             cmbStatus.SelectedIndex = 0;
-            cmbPharmacy.SelectedIndex = 0;
+            cmbPharmacy.SelectedIndex = 0;   // "All pharmacies", which SelectedPharmacyId turns back into 0
 
-            // Lowered again, then one deliberate query with all four filters settled.
-            _loading = false;
-            LoadOrders();
+            _loading = false;   // lowered again, with all four filters now settled
+            LoadOrders();   // the single query this whole handler exists to run
         }
 
-        // Closing only. This window is opened with ShowDialog by the customer's home
-        // screen, so closing it hands control back there with nothing to tidy up.
+        // Opened with ShowDialog by the home screen, so closing hands control back there.
         private void btnBack_Click(object sender, EventArgs e) => Close();
     }
 }

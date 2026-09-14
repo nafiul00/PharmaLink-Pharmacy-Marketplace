@@ -4,53 +4,33 @@ using System.Windows.Forms;         // Form, DataGridView, MessageBox and the ev
 using PharmaLinkApp.Helpers;        // UiTheme: colours, fonts and the grid styling
 using PharmaLinkApp.Services;       // ReviewService, the only class here that holds any SQL
 
-namespace PharmaLinkApp.Forms
+namespace PharmaLinkApp.Forms   // presentation only; not one line of SQL is written in a form
 {
-    /// <summary>
-    /// Requirement 15. The reviews written about this pharmacy's medicines.
-    ///
-    /// The form is read only on purpose: an owner can read the ratings but can
-    /// neither edit nor delete them. If he believes a review is abusive he uses
-    /// the Report button, which flags it for the Super Admin rather than
-    /// removing it himself.
-    /// </summary>
-    public partial class AdminReviewsForm : Form
+    /// <summary>The reviews written about this pharmacy's medicines.</summary>
+    public partial class AdminReviewsForm : Form   // requirement 15
     {
-        // ONE service, and note which of its methods this form calls: GetForPharmacy,
-        // GetAverageForPharmacy and CountForPharmacy, all reads. ReviewService also exposes
-        // SetHidden, which runs UPDATE Reviews SET IsHidden, but that method is called only
-        // from the Super Admin's ModerateReviewsForm. The capability exists; this screen
-        // deliberately never reaches for it.
+        // Three reads and one write: Report flags a review, it never edits or deletes one.
         private readonly ReviewService _reviews = new ReviewService();
-        // True until Load has finished. cmbRating is wired to Filter_Changed, which queries,
-        // so setting SelectedIndex below would otherwise run a query before the grid is styled.
+        // True until Load finishes, so setting SelectedIndex below cannot query early.
         private bool _loading = true;
 
-        public AdminReviewsForm()
+        public AdminReviewsForm()   // runs before the window exists, so no query belongs here
         {
-            // Designer generated controls only. No query in the constructor: it runs before the
-            // window exists, so a failure would have nowhere to report itself.
-            InitializeComponent();
+            InitializeComponent();   // designer generated controls only
         }
 
-        private void AdminReviewsForm_Load(object sender, EventArgs e)
+        private void AdminReviewsForm_Load(object sender, EventArgs e)   // runs once, after the window exists
         {
             ApplyTheme();   // colours, fonts, grid styling and the CellFormatting hook up
 
-            // The five entries are added here, next to RatingRange which decodes them, rather
-            // than in the designer where the two lists could drift apart. The ORDER is the
-            // contract: RatingRange switches on the index, so moving an entry would silently
-            // change what it filters. The bands are the ones an owner actually wants, which is
-            // why "3 stars and below" and "1 and 2 stars only" overlap rather than partitioning
-            // the range neatly: the second is the complaints list, the first is everything that
-            // is not praise.
+            // Added here, next to RatingRange which decodes them; the ORDER is the contract.
             cmbRating.Items.AddRange(new object[]
             {
-                "All ratings",
-                "5 stars only",
-                "4 stars and above",
-                "3 stars and below",
-                "1 and 2 stars only"
+                "All ratings",          // index 0, the default and the widest band
+                "5 stars only",         // index 1, just the top mark
+                "4 stars and above",    // index 2, the satisfied customers
+                "3 stars and below",    // index 3, everything that is not praise
+                "1 and 2 stars only"    // index 4, the complaints the Super Admin moderates
             });
             cmbRating.SelectedIndex = 0;   // raises SelectedIndexChanged, which _loading swallows
 
@@ -58,272 +38,189 @@ namespace PharmaLinkApp.Forms
             LoadGrid();         // one deliberate first load, now that everything is wired
         }
 
-        // Pure presentation, called once from Load. It also subscribes the grid to its
-        // CellFormatting handler, which is what colours the rows by rating. Note what it does
-        // NOT style: there is no delete or hide button on this form to give a colour to.
+        // Pure presentation, and note what it does NOT style: no delete or hide button.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Customer Reviews");
+            UiTheme.StyleForm(this, "Customer Reviews");   // window background and title bar text
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblTitle.Font = UiTheme.FontTitle;
-            lblTitle.ForeColor = Color.White;
-            lblSubtitle.Font = UiTheme.FontSmall;
-            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);
+            panelHeader.BackColor = UiTheme.Primary;                 // the brand green band
+            lblTitle.Font = UiTheme.FontTitle;                       // the page name, the largest text here
+            lblTitle.ForeColor = Color.White;                        // the only colour legible on the green band
+            lblSubtitle.Font = UiTheme.FontSmall;                    // the fixed one-line explanation
+            lblSubtitle.ForeColor = Color.FromArgb(200, 230, 220);   // pale green, so it supports the title
 
-            lblAverage.Font = new Font("Segoe UI Semibold", 14F, FontStyle.Bold);
-            lblAverage.ForeColor = UiTheme.TextDark;
+            lblAverage.Font = new Font("Segoe UI Semibold", 14F, FontStyle.Bold);   // the headline figure
+            lblAverage.ForeColor = UiTheme.TextDark;   // recoloured to Danger in LoadGrid when the score is poor
 
-            lblReadOnlyNote.Font = UiTheme.FontSmall;
-            lblReadOnlyNote.ForeColor = UiTheme.TextMuted;
-            lblStatus.Font = UiTheme.FontSmall;
-            lblStatus.ForeColor = UiTheme.TextMuted;
-            txtComment.Font = UiTheme.FontBody;
-            txtComment.BackColor = Color.White;
+            lblReadOnlyNote.Font = UiTheme.FontSmall;        // the standing note about what an owner may do
+            lblReadOnlyNote.ForeColor = UiTheme.TextMuted;   // grey, so guidance never reads as live feedback
+            lblStatus.Font = UiTheme.FontSmall;              // the outcome line LoadGrid and Report write to
+            lblStatus.ForeColor = UiTheme.TextMuted;         // grey too: failures use a dialog instead
+            txtComment.Font = UiTheme.FontBody;              // the full comment box under the grid
+            txtComment.BackColor = Color.White;              // white even though it is ReadOnly, so it reads as text
 
-            UiTheme.StyleSecondary(btnBack);
-            UiTheme.StyleSecondary(btnRefresh);
-            UiTheme.StyleAccent(btnReport);
-            UiTheme.StyleGrid(dgvReviews);
-            dgvReviews.CellFormatting += dgvReviews_CellFormatting;
+            UiTheme.StyleSecondary(btnBack);      // grey: leaves the screen and changes nothing
+            UiTheme.StyleSecondary(btnRefresh);   // grey too: re-runs the same read
+            UiTheme.StyleAccent(btnReport);       // the one button here that writes to the database
+            UiTheme.StyleGrid(dgvReviews);        // shared grid styling, including Fill column sizing
+            dgvReviews.CellFormatting += dgvReviews_CellFormatting;   // what colours the rows by rating
         }
 
-        private void RatingRange(out int min, out int max)
+        private void RatingRange(out int min, out int max)   // combo index into a rating band
         {
-            // Two out parameters rather than a return value, because the answer is a RANGE and
-            // the service takes it as BETWEEN @MinRating AND @MaxRating. Expressing every
-            // choice as a pair means "All ratings" is 1 to 5 rather than a special case the
-            // query would have to test for, so there is one query and no branch in the SQL.
+            // Two out parameters, because the service takes BETWEEN @MinRating AND @MaxRating.
             switch (cmbRating.SelectedIndex)
             {
                 case 1: min = 5; max = 5; break;   // only the top mark
                 case 2: min = 4; max = 5; break;   // the satisfied customers
                 case 3: min = 1; max = 3; break;   // everything that is not praise
-                case 4: min = 1; max = 2; break;   // the complaints, and the band the Super Admin moderates
-                // default, not case 0, because SelectedIndex is -1 before anything is chosen
-                // and an unmatched switch would leave min and max unassigned, which the
-                // compiler refuses. The widest range is also the safest fallback: it shows
-                // everything rather than silently hiding reviews.
+                case 4: min = 1; max = 2; break;   // the complaints the Super Admin moderates
+                // default, not case 0: SelectedIndex is -1 until something is chosen.
                 default: min = 1; max = 5; break;
             }
         }
 
-        private void LoadGrid()
+        private void LoadGrid()   // every refresh path on this form comes through here
         {
-            // Every refresh path comes through here: the first load, the Refresh button and the
-            // rating filter, so one guard covers all three.
-            if (_loading) return;
+            if (_loading) return;   // one guard covers the first load, Refresh and the filter
 
-            try
+            try   // the three reads below are one unit of work
             {
-                int min, max;
-                RatingRange(out min, out max);
+                int min, max;              // filled by RatingRange from the combo box
+                RatingRange(out min, out max);   // the only user input that reaches the query
 
-                // The pharmacy id comes from UserSession, set once at login, and the rating
-                // band from the screen. Only the second is user input, and it travels as a
-                // parameter, so the filter can narrow what is shown but can never widen it past
-                // this shop. There is no control anywhere on this form holding a pharmacy id,
-                // which is precisely why one owner cannot read another shop's reviews.
-                //
-                // Reviews are attached to MEDICINES, not to pharmacies, so the service joins
-                // Reviews to Medicines and filters on m.PharmacyId. It also filters
-                // IsHidden = 0, so a review the Super Admin has already hidden does not appear
-                // here either: the owner sees exactly what customers see.
+                // PharmacyId comes from UserSession, never a control, so this cannot widen.
                 DataTable table = _reviews.GetForPharmacy(UserSession.PharmacyId, min, max);
-                dgvReviews.DataSource = table;
+                dgvReviews.DataSource = table;   // binding is what CREATES the columns below
 
-                // Binding is what CREATES the columns, so the renames follow the assignment,
-                // and the guard stops a lookup by name from throwing if none were created.
-                if (dgvReviews.Columns.Count > 0)
+                if (dgvReviews.Columns.Count > 0)   // guards a failed bind, where a name lookup throws
                 {
-                    dgvReviews.Columns["ReviewId"].HeaderText = "ID";
-                    // StyleGrid sets AutoSizeColumnsMode to Fill, so FillWeight is a share of
-                    // the width rather than a pixel count.
-                    dgvReviews.Columns["ReviewId"].FillWeight = 28;
-                    // The reviewer's real name, joined from Users. Reviews are not anonymous
-                    // here because every one of them is tied to a delivered order.
+                    dgvReviews.Columns["ReviewId"].HeaderText = "ID";      // the key the Report button acts on
+                    dgvReviews.Columns["ReviewId"].FillWeight = 28;        // FillWeight is a share of width, not pixels
+                    // The reviewer's real name, joined from Users; reviews are not anonymous here.
                     dgvReviews.Columns["ReviewerName"].HeaderText = "Reviewer";
-                    dgvReviews.Columns["MedicineName"].HeaderText = "Medicine";
-                    dgvReviews.Columns["Strength"].HeaderText = "Strength";
-                    dgvReviews.Columns["Strength"].FillWeight = 45;
-                    // "Stars" rather than "Rating", because the number is understood at a
-                    // glance as a five point scale.
-                    dgvReviews.Columns["Rating"].HeaderText = "Stars";
-                    dgvReviews.Columns["Rating"].FillWeight = 32;
-                    // By far the largest share, because the comment is the part worth reading.
-                    // A grid cell still truncates it, which is why the full text is repeated in
-                    // the read only box below whenever a row is selected.
-                    dgvReviews.Columns["Comment"].HeaderText = "Comment";
-                    dgvReviews.Columns["Comment"].FillWeight = 170;
-                    dgvReviews.Columns["ReviewDate"].HeaderText = "Written on";
-                    // The order number is shown deliberately. It is the PROOF behind the
-                    // review: AddReview only inserts when an EXISTS finds this customer's
-                    // delivered order containing this medicine, so the owner can trace any
-                    // rating back to a real sale rather than suspecting it was invented.
+                    dgvReviews.Columns["MedicineName"].HeaderText = "Medicine";   // what was reviewed
+                    dgvReviews.Columns["Strength"].HeaderText = "Strength";       // 250mg against 500mg
+                    dgvReviews.Columns["Strength"].FillWeight = 45;               // a short column, so a small share
+                    dgvReviews.Columns["Rating"].HeaderText = "Stars";   // read at a glance as a five point scale
+                    dgvReviews.Columns["Rating"].FillWeight = 32;        // a single digit needs almost no room
+                    dgvReviews.Columns["Comment"].HeaderText = "Comment";   // the part actually worth reading
+                    dgvReviews.Columns["Comment"].FillWeight = 170;         // by far the largest share of the width
+                    dgvReviews.Columns["ReviewDate"].HeaderText = "Written on";   // when it was posted
+                    // The PROOF: AddReview only inserts against a delivered order.
                     dgvReviews.Columns["OrderId"].HeaderText = "Order";
-                    dgvReviews.Columns["OrderId"].FillWeight = 40;
+                    dgvReviews.Columns["OrderId"].FillWeight = 40;   // an order number is short
                 }
 
-                // Two more round trips rather than averaging the rows on screen, and that is
-                // the point: the grid holds only the rows inside the selected rating band, so
-                // averaging them would make the headline figure change every time the filter
-                // changed. Both queries ignore the filter and cover every visible review, so
-                // the average stays the shop's actual average.
+                // Two round trips, not an average of the grid: it holds only the band.
                 decimal average = _reviews.GetAverageForPharmacy(UserSession.PharmacyId);
-                int total = _reviews.CountForPharmacy(UserSession.PharmacyId);
+                int total = _reviews.CountForPharmacy(UserSession.PharmacyId);   // how many it is built from
 
-                // "No reviews yet" rather than "0.00 / 5". A new shop has not been rated badly,
-                // it has not been rated at all, and a zero would read as the worst possible
-                // score. The service returns 0 for an empty set, so the count is what
-                // distinguishes the two cases.
+                // "No reviews yet" rather than "0.00 / 5": an unrated shop is not a bad one.
                 lblAverage.Text = total == 0
-                    ? "No reviews yet"
-                    : "Average rating  " + average.ToString("N2") + " / 5   from " + total + " review(s)";
+                    ? "No reviews yet"   // the service returns 0 for an empty set, so count decides
+                    : "Average rating  " + average.ToString("N2") + " / 5   from " + total + " review(s)";   // N2 pins it at two places
 
-                // Red only when there is an average AND it is poor. Testing average > 0 first
-                // keeps a shop with no reviews at all from being painted as a failing one.
+                // Red only when there IS an average and it is poor, so a new shop stays dark.
                 lblAverage.ForeColor = average > 0 && average < 2.5m ? UiTheme.Danger : UiTheme.TextDark;
 
-                // The warning repeats the exact rule the Super Admin's low rated report uses:
-                // an average below 2.5 with at least two reviews. The second condition is the
-                // fairness rule, and it is stated here so an owner learns he is on that report
-                // from his own screen rather than from a suspension notice.
+                // The rule the low rated report uses: below 2.5 with at least two reviews.
                 lblStatus.Text = average > 0 && average < 2.5m && total >= 2
-                    ? "Warning: your average is below 2.5 with " + total + " reviews, which puts your shop on the Super Admin's low rated report."
-                    // Otherwise the ordinary case states the row count and, in one line, why
-                    // the ratings can be trusted: every review is tied to a delivered order.
-                    : table.Rows.Count + " review(s) shown. Every review is tied to a delivered order, so none of them are fake.";
+                    ? "Warning: your average is below 2.5 with " + total + " reviews, which puts your shop on the Super Admin's low rated report."   // the warning branch
+                    : table.Rows.Count + " review(s) shown. Every review is tied to a delivered order, so none of them are fake.";   // the ordinary branch
 
-                // Rebinding cleared the selection, so the comment box and the Report button are
-                // re-evaluated rather than left describing a row that is no longer there.
-                UpdateSelection();
+                UpdateSelection();   // rebinding cleared the selection, so the box and button are re-evaluated
             }
-            catch (Exception ex)
+            catch (Exception ex)   // one catch around all three reads
             {
-                // DbHelper has already turned the SqlException into a readable sentence, so it
-                // is shown as it stands rather than wrapped in wording that would hide it.
+                // DbHelper already turned the SqlException into a readable sentence.
                 MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void dgvReviews_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
+        private void dgvReviews_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)   // paints rows by rating
         {
-            // CellFormatting fires once per CELL as it is painted, including while scrolling,
-            // so it must stay cheap and must never query. The guard covers the header row,
-            // whose index is -1, and the moment during a rebind when no columns exist.
-            if (e.RowIndex < 0 || dgvReviews.Columns.Count == 0) return;
+            // Fires once per CELL as it is painted, so it must stay cheap and never query.
+            if (e.RowIndex < 0 || dgvReviews.Columns.Count == 0) return;   // -1 is the header row
 
-            DataGridViewRow row = dgvReviews.Rows[e.RowIndex];
-            object rating = row.Cells["Rating"].Value;
-            // Both null and DBNull have to be excluded: the first happens mid rebind, and
-            // Convert.ToInt32 throws on the second rather than returning zero.
+            DataGridViewRow row = dgvReviews.Rows[e.RowIndex];   // the row being painted right now
+            object rating = row.Cells["Rating"].Value;           // object, because the grid is bound to a DataTable
+            // null happens mid rebind; Convert.ToInt32 throws on DBNull rather than 0.
             if (rating == null || rating == DBNull.Value) return;
 
-            int stars = Convert.ToInt32(rating);
-            // The colours make the list scannable without reading a word of it: the complaints
-            // stand out from the praise at a glance. The thresholds match the "1 and 2 stars
-            // only" and "4 stars and above" filter bands above, so a filtered view and a
-            // coloured row always agree about what counts as bad.
-            if (stars <= 2) row.DefaultCellStyle.BackColor = UiTheme.LowStockBack;        // the same red used for anything needing attention
-            else if (stars >= 4) row.DefaultCellStyle.BackColor = UiTheme.DeliveredBack;  // the same green used for a finished order
-            // The explicit white branch is not redundant. DataGridViewRow objects are REUSED as
-            // the grid scrolls, so a three star row left unpainted would keep the red or green
-            // of whichever row previously occupied that slot, and the colouring would appear to
-            // be random.
+            int stars = Convert.ToInt32(rating);   // safe now that both empty cases are excluded
+            // The thresholds match the filter bands, so colour and filter agree on 'bad'.
+            if (stars <= 2) row.DefaultCellStyle.BackColor = UiTheme.LowStockBack;        // the red used for attention
+            else if (stars >= 4) row.DefaultCellStyle.BackColor = UiTheme.DeliveredBack;  // the green used for done
+            // Not redundant: rows are REUSED while scrolling, so unpainted keeps old paint.
             else row.DefaultCellStyle.BackColor = Color.White;
         }
 
-        // Selecting a different review changes what the comment box should show and what the
-        // Report button would act on, so both are refreshed together.
+        // The comment box and the Report button both depend on which row is current.
         private void dgvReviews_SelectionChanged(object sender, EventArgs e) => UpdateSelection();
 
-        private void UpdateSelection()
+        private void UpdateSelection()   // the comment box and the Report button, together
         {
-            DataGridViewRow row = dgvReviews.CurrentRow;
+            DataGridViewRow row = dgvReviews.CurrentRow;   // null on an empty grid and mid rebind
 
-            // No row at all, which is the empty grid case and also the instant during a rebind
-            // when the cells are not yet populated.
-            if (row == null || row.Cells["ReviewId"].Value == null)
+            if (row == null || row.Cells["ReviewId"].Value == null)   // nothing selected to act on
             {
-                // Cleared rather than left holding the previous review's text, which would
-                // otherwise sit under an empty grid and appear to belong to nothing.
-                txtComment.Clear();
-                // Disabled because there is nothing to report. Offering an action that cannot
-                // succeed is worse than not offering it.
-                btnReport.Enabled = false;
-                return;
+                txtComment.Clear();        // cleared, so old text cannot sit under an empty grid
+                btnReport.Enabled = false; // offering an action that cannot succeed is worse than none
+                return;                    // nothing else to compute without a row
             }
 
-            object comment = row.Cells["Comment"].Value;
-            // The Comment column is nullable, because a customer may leave a rating with no
-            // words. The placeholder NAMES that situation instead of leaving an empty box: a
-            // blank panel reads as a screen that failed to load, whereas this sentence says
-            // plainly that there is nothing to read and the form is working.
+            object comment = row.Cells["Comment"].Value;   // nullable: a rating may carry no words
+            // The placeholder NAMES the situation, because a blank box reads as a failed load.
             txtComment.Text = comment == null || comment == DBNull.Value
-                ? "(this customer left a rating but no written comment)"
-                : comment.ToString();
+                ? "(this customer left a rating but no written comment)"   // said plainly
+                : comment.ToString();   // the full text the grid cell truncates
 
-            // The box itself is marked ReadOnly in the designer and is multiline with a
-            // scrollbar, so the owner can read and copy a long comment that the grid cell
-            // truncates, but cannot type over it. That is the same rule the rest of this form
-            // follows: the owner may read a review and never change one.
+            // ReadOnly in the designer: an owner may read a review but never type over it.
             btnReport.Enabled = true;
         }
 
-        private void btnReport_Click(object sender, EventArgs e)
+        private void btnReport_Click(object sender, EventArgs e)   // flags one review for the admin
         {
-            // THE ONLY ACTION ON THIS FORM, and notice what it is not. There is deliberately no
-            // Delete button and no Hide button here: neither exists on the designer surface, so
-            // there is no handler to disable and nothing to bypass. A shop that could delete
-            // its own bad reviews would make every rating on the platform worthless, so the
-            // subject of a review is never allowed to remove it. ReviewService.SetHidden does
-            // exist, and it hides rather than deletes, but it is called only from the Super
-            // Admin's ModerateReviewsForm. The reviews themselves are never deleted by anyone:
-            // IsHidden is a flag, and the row and its order number stay in the database.
+            // The only write here. No Delete or Hide button exists on the designer surface.
             DataGridViewRow row = dgvReviews.CurrentRow;
-            if (row == null) return;   // re-checked even though the button is disabled without a row
+            if (row == null) return;   // re-checked, even though the button is disabled without a row
 
-            int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);
+            int reviewId = Convert.ToInt32(row.Cells["ReviewId"].Value);   // what the update travels on
 
-            // Asked first, because a report puts the review in front of the Super Admin and
-            // the owner should be sure before sending it.
+            // Asked first, because a report puts the review in front of the Super Admin.
             DialogResult answer = MessageBox.Show(
-                "Report review " + reviewId + " to the Super Admin?\r\n\r\n" +
-                "It stays visible to customers until the Super Admin decides. Only the Super Admin " +
-                "can hide a review, and even then the row is never deleted.",
-                "Report review", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (answer != DialogResult.Yes) return;
+                "Report review " + reviewId + " to the Super Admin?\r\n\r\n" +   // names the id being sent
+                "It stays visible to customers until the Super Admin decides. Only the Super Admin " +   // what happens next
+                "can hide a review, and even then the row is never deleted.",   // states the mechanism
+                "Report review", MessageBoxButtons.YesNo, MessageBoxIcon.Question);   // a question, not a warning
+            if (answer != DialogResult.Yes) return;   // testing against Yes, so any dismissal refuses
 
-            try
+            try   // the one database write this form performs
             {
-                // Report sets Reviews.IsReported = 1, scoped to this pharmacy by the join to
-                // Medicines. The Super Admin's Moderate Reviews queue always includes reported
-                // reviews, whatever their star rating, and lists them first.
+                // Report WRITES: it sets Reviews.IsReported = 1, scoped to this shop.
                 if (_reviews.Report(reviewId, UserSession.PharmacyId))
                 {
+                    // The queue always includes reported reviews whatever their rating, first.
                     lblStatus.Text = "Review " + reviewId + " reported. It is now at the top of the Super Admin's Moderate Reviews queue.";
                 }
-                else
+                else   // 0 rows: already hidden in the meantime, or not about this shop
                 {
-                    // 0 rows: the review was hidden in the meantime, or it is not about this shop.
-                    MessageBox.Show("Review " + reviewId + " could not be reported. It may already have been hidden by the Super Admin.",
-                        "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    LoadGrid();
+                    MessageBox.Show("Review " + reviewId + " could not be reported. It may already have been hidden by the Super Admin.",   // the honest answer
+                        "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Warning);   // says so rather than claiming success
+                    LoadGrid();   // re-read, so the grid stops showing a row that has moved on
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex)   // the write can still fail for a database reason
             {
                 // DbHelper has already turned any SqlException into a readable sentence.
                 MessageBox.Show(ex.Message, "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        // Both the rating combo and the Refresh button point at this one handler, because the
-        // response to either is the same: re-run the query with whatever the filter now holds.
-        // Sharing it means the two routes cannot behave differently.
+        // The rating combo and Refresh share one handler, so they cannot differ.
         private void Filter_Changed(object sender, EventArgs e) => LoadGrid();
-        // Close, not Hide: the dashboard opened this form with ShowDialog, disposes it and then
-        // refreshes itself, so closing is all this button has to do.
+        // Close, not Hide: the dashboard opened this with ShowDialog and disposes it.
         private void btnBack_Click(object sender, EventArgs e) => Close();
     }
 }

@@ -4,61 +4,40 @@ using System.Windows.Forms;         // Form, Label, Button, DataGridView and the
 using PharmaLinkApp.Helpers;        // UiTheme, the one place colours, fonts and tiles are defined
 using PharmaLinkApp.Services;       // the four services this screen reads through: no SQL is written in a form
 
+// One namespace for every window, so a form can open any other by name.
 namespace PharmaLinkApp.Forms
 {
-    /// <summary>
-    /// The pharmacy owner's hub (requirements 10 to 18).
-    ///
-    /// The rule that governs this whole branch of the application is
-    /// requirement 18: every query behind every form reachable from here
-    /// carries WHERE PharmacyId = UserSession.PharmacyId, taken from the login,
-    /// so one pharmacy owner can never read another owner's medicines, orders
-    /// or earnings. The rule lives in the queries, not in hidden buttons.
-    /// </summary>
-    public partial class AdminDashboard : Form
+    /// <summary>The pharmacy owner's hub (requirements 10 to 18).</summary>
+    public partial class AdminDashboard : Form   // every query here carries WHERE PharmacyId = UserSession.PharmacyId (req 18)
     {
-        // One service object per concern, created once with the form and shared by every
-        // handler on it. None of them holds a connection or any state between calls, so
-        // a field costs nothing and saves constructing a service inside each click.
-        // Note what is NOT here: no SqlConnection, no SQL text. The form asks a service
-        // a question; the service is the only layer that knows what a table is called.
+        // One service per concern; none holds a connection, and no form writes SQL.
         private readonly OrderService _orders = new OrderService();
-        private readonly MedicineService _medicines = new MedicineService();
-        private readonly ReportService _reports = new ReportService();
-        private readonly PrescriptionService _prescriptions = new PrescriptionService();
+        private readonly MedicineService _medicines = new MedicineService();          // the catalogue: low stock rows, and the two counts in the subtitle
+        private readonly ReportService _reports = new ReportService();                // the four tile figures, all from one statement so they agree
+        private readonly PrescriptionService _prescriptions = new PrescriptionService();   // only the pending count is needed here; verifying happens on its own screen
 
-        // Only the Label inside each tile is kept, not the Panel around it. The panel is
-        // placed once and never changes; the number inside it is rewritten on every
-        // refresh, so the Label is the only reference the form actually needs. UiTheme
-        // hands it back through an out parameter for exactly this reason.
+        // Only the inner Label is kept: the panel never changes, the number does.
         private Label _tileOrders;
-        private Label _tileRevenue;
-        private Label _tileCommission;
-        private Label _tileLowStock;
+        private Label _tileRevenue;      // gross sales, via UiTheme.Money so currency reads the same everywhere
+        private Label _tileCommission;   // what PharmaLink keeps; shown beside the gross so the two are read together
+        private Label _tileLowStock;     // the one count that means work to do, which is why its tile is the red one
 
-        // True until Load has finished wiring the screen up. Setting
-        // cmbOrderStatus.SelectedIndex below raises SelectedIndexChanged, and that
-        // handler queries the database; without this flag the first query would run
-        // against a grid that has not been styled and before the tiles exist.
+        // True until Load finishes: it swallows the first SelectedIndexChanged query.
         private bool _loading = true;
 
-        public AdminDashboard()
+        public AdminDashboard()   // parameterless: the shop comes from UserSession, never from a caller
         {
-            // Designer generated control creation only. Deliberately no database work
-            // here: the constructor runs before the window exists, so an error would
-            // have no form to display its message on.
+            // Designer controls only: no database work before the window exists.
             InitializeComponent();
         }
 
+        // Load, not the constructor: by now there is a window to show an error on.
         private void AdminDashboard_Load(object sender, EventArgs e)
         {
             ApplyTheme();    // colours, fonts, grid styling and the CellFormatting hook ups
             BuildTiles();    // the four summary panels, created in code rather than in the designer
 
-            // The filter list is built here, next to the code that reads it, rather than
-            // in the designer where the two could drift apart. The order matters: index 0
-            // is the entry LoadOrders treats as "no filter", and the remaining four strings
-            // are exactly the values the Status column is allowed to hold.
+            // Built here, not in the designer: index 0 is the "no filter" entry.
             cmbOrderStatus.Items.AddRange(new object[] { "All orders", "Placed", "Confirmed", "Delivered", "Cancelled" });
             cmbOrderStatus.SelectedIndex = 0;   // raises SelectedIndexChanged, which _loading swallows
 
@@ -66,517 +45,384 @@ namespace PharmaLinkApp.Forms
             LoadEverything();   // one deliberate first load, now that every control is ready
         }
 
-        // Pure presentation, called once from Load. It also subscribes both grids to
-        // their CellFormatting handlers, which is why the row colouring further down
-        // starts working the moment the form opens.
+        // Presentation only, and where both CellFormatting handlers are subscribed.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Pharmacy Owner");
+            UiTheme.StyleForm(this, "Pharmacy Owner");   // window background, icon and the title bar suffix naming the role
 
-            panelSide.BackColor = UiTheme.Sidebar;
-            lblBrand.Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold);
-            lblBrand.ForeColor = Color.White;
-            lblRole.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);
-            lblRole.ForeColor = Color.FromArgb(140, 205, 185);
-            lblShopName.Font = UiTheme.FontSmall;
-            lblShopName.ForeColor = Color.FromArgb(190, 205, 216);
-            lblShopName.Text = UserSession.PharmacyName + Environment.NewLine + UserSession.FullName;
+            panelSide.BackColor = UiTheme.Sidebar;                                  // the dark column; its colour is what separates navigation from content
+            lblBrand.Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold);     // the product name, the largest text on the sidebar
+            lblBrand.ForeColor = Color.White;                                       // maximum contrast on the dark panel, so the brand reads first
+            lblRole.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);       // small but bold: a caption, not a heading
+            lblRole.ForeColor = Color.FromArgb(140, 205, 185);                      // muted green, so the role label sits below the brand in the hierarchy
+            lblShopName.Font = UiTheme.FontSmall;                                   // from the theme, so this label matches every other small line in the app
+            lblShopName.ForeColor = Color.FromArgb(190, 205, 216);                  // dimmer still: the shop name is context, not a control
+            lblShopName.Text = UserSession.PharmacyName + Environment.NewLine + UserSession.FullName;   // shop over person, so the scope of the screen is named before the user is
 
-            foreach (Button button in new[] { btnMedicines, btnInventory, btnPrescriptions, btnEarnings,
-                                              btnOffers, btnReviews, btnShopProfile, btnMyProfile })
+            // One loop, so the eight buttons look identical by construction.
+            foreach (Button button in new[] { btnMedicines, btnInventory, btnPrescriptions, btnEarnings,   // the array is built inline; it exists only for this loop
+                                              btnOffers, btnReviews, btnShopProfile, btnMyProfile })      // order matches their top-to-bottom order on the sidebar
             {
-                UiTheme.StyleSidebarButton(button);
+                UiTheme.StyleSidebarButton(button);   // flat, left aligned, full width, with the theme's hover colour
             }
 
-            UiTheme.StyleSidebarButton(btnLogout);
-            btnLogout.BackColor = UiTheme.Danger;
-            btnLogout.FlatAppearance.MouseOverBackColor = Color.FromArgb(205, 60, 60);
+            UiTheme.StyleSidebarButton(btnLogout);                                     // styled with the others first, so it keeps the same shape and alignment
+            btnLogout.BackColor = UiTheme.Danger;                                      // then overridden to red: it is the one button that ends the session
+            btnLogout.FlatAppearance.MouseOverBackColor = Color.FromArgb(205, 60, 60); // a deeper red on hover; the base red would look dead on mouse-over
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblHeaderTitle.Font = UiTheme.FontTitle;
-            lblHeaderTitle.ForeColor = Color.White;
-            lblHeaderSub.Font = UiTheme.FontSmall;
-            lblHeaderSub.ForeColor = Color.FromArgb(200, 230, 220);
-            UiTheme.StyleSecondary(btnRefresh);
+            panelHeader.BackColor = UiTheme.Primary;                       // the brand green band across the top of the content area
+            lblHeaderTitle.Font = UiTheme.FontTitle;                       // the largest content font; this is the page name
+            lblHeaderTitle.ForeColor = Color.White;                        // white on the green band, the same pairing as the sidebar brand
+            lblHeaderSub.Font = UiTheme.FontSmall;                         // the subtitle line rewritten on every load with the live counts
+            lblHeaderSub.ForeColor = Color.FromArgb(200, 230, 220);        // pale green: readable on the band without competing with the title
+            UiTheme.StyleSecondary(btnRefresh);                            // secondary, not primary: refreshing is available, not the thing to do
 
-            lblOrdersTitle.Font = UiTheme.FontHeading;
-            lblOrdersTitle.ForeColor = UiTheme.TextDark;
-            lblOrdersHint.Font = UiTheme.FontSmall;
-            lblOrdersHint.ForeColor = UiTheme.TextMuted;
-            lblLowStockTitle.Font = UiTheme.FontHeading;
-            lblLowStockTitle.ForeColor = UiTheme.TextDark;
+            lblOrdersTitle.Font = UiTheme.FontHeading;      // section heading above the orders grid
+            lblOrdersTitle.ForeColor = UiTheme.TextDark;    // near-black from the theme rather than pure black, which reads harsh on white
+            lblOrdersHint.Font = UiTheme.FontSmall;         // the one-line instruction under the heading
+            lblOrdersHint.ForeColor = UiTheme.TextMuted;    // grey, so the hint is findable but never mistaken for data
+            lblLowStockTitle.Font = UiTheme.FontHeading;    // the matching heading for the second grid, deliberately the same size
+            lblLowStockTitle.ForeColor = UiTheme.TextDark;  // and the same colour, so the two sections read as equals
 
-            UiTheme.StyleGrid(dgvOrders);
-            UiTheme.StyleGrid(dgvLowStock);
-            dgvOrders.CellFormatting += dgvOrders_CellFormatting;
-            dgvLowStock.CellFormatting += dgvLowStock_CellFormatting;
+            UiTheme.StyleGrid(dgvOrders);                                  // row height, header style, alternating rows, selection colour: all from one place
+            UiTheme.StyleGrid(dgvLowStock);                                // one call, so two grids on a screen cannot look like two controls
+            dgvOrders.CellFormatting += dgvOrders_CellFormatting;          // subscribed here rather than in the designer, next to the handler it points at
+            dgvLowStock.CellFormatting += dgvLowStock_CellFormatting;      // subscribing ONCE matters: ApplyTheme runs from Load only
 
-            UiTheme.StyleSuccess(btnConfirmOrder);
-            UiTheme.StylePrimary(btnDeliverOrder);
-            UiTheme.StyleDanger(btnCancelOrder);
-            UiTheme.StyleSecondary(btnViewInvoice);
+            UiTheme.StyleSuccess(btnConfirmOrder);    // green: the step that moves an order forward
+            UiTheme.StylePrimary(btnDeliverOrder);    // brand colour: the ordinary end of the lifecycle
+            UiTheme.StyleDanger(btnCancelOrder);      // red: the only button here that puts stock back and cannot be undone
+            UiTheme.StyleSecondary(btnViewInvoice);   // grey: read-only, so it must not compete with the three that change data
         }
 
+        // Called once from Load; the tiles are containers, LoadEverything fills them.
         private void BuildTiles()
         {
-            // BuildTile returns the finished Panel and hands the inner Label back through
-            // the out parameter, so the form holds a reference to the one control it will
-            // rewrite and none of the decoration. Building them in code rather than on the
-            // designer surface means every dashboard in the application gets identical
-            // tiles from one method instead of four hand placed copies drifting apart.
-            //
-            // The colour is the stripe down the left edge and is chosen to match what the
-            // figure MEANS: red is reserved for the count that needs action, so a glance
-            // at the row of tiles is enough to know whether anything is wrong.
-            Panel t1 = UiTheme.BuildTile("ORDERS RECEIVED", UiTheme.Accent, out _tileOrders);
-            Panel t2 = UiTheme.BuildTile("GROSS SALES", UiTheme.Primary, out _tileRevenue);
-            Panel t3 = UiTheme.BuildTile("PHARMALINK COMMISSION", UiTheme.Warning, out _tileCommission);
-            Panel t4 = UiTheme.BuildTile("MEDICINES BELOW MIN STOCK", UiTheme.Danger, out _tileLowStock);
+            // Built in code, so every dashboard gets identical tiles from one method.
+            Panel t1 = UiTheme.BuildTile("ORDERS RECEIVED", UiTheme.Accent, out _tileOrders);   // colour matches meaning: red is kept for the count that needs action
+            Panel t2 = UiTheme.BuildTile("GROSS SALES", UiTheme.Primary, out _tileRevenue);              // brand green: the headline figure, but nothing to act on
+            Panel t3 = UiTheme.BuildTile("PHARMALINK COMMISSION", UiTheme.Warning, out _tileCommission); // amber: money leaving, so it is marked but not alarming
+            Panel t4 = UiTheme.BuildTile("MEDICINES BELOW MIN STOCK", UiTheme.Danger, out _tileLowStock);   // red, and the only red: this is the count that needs work
 
-            // 250 is the starting x, clear of the sidebar; the loop then steps by the same
-            // amount, which is the tile width plus the gutter. Writing four explicit
-            // Location lines would work until one of them was edited and the row stopped
-            // being evenly spaced, so the spacing is expressed once as an increment.
-            int x = 250;
-            foreach (Panel tile in new[] { t1, t2, t3, t4 })
+            // Spacing is one increment, not four Location lines that could drift apart.
+            int x = 250;   // 250 is the starting x, clear of the sidebar
+            foreach (Panel tile in new[] { t1, t2, t3, t4 })   // left to right in the order the four were built above
             {
-                // One call replaces four lines. PlaceTile sets the location and size,
-                // adds the tile to the FORM rather than to a container, and brings it to
-                // the front, because the designer's own controls were added first and
-                // would otherwise paint over it. Centralised in UiTheme so every
-                // dashboard places its tiles the same way on a scaled display.
+                // PlaceTile sets location and size, adds to the FORM, and brings it to front.
                 UiTheme.PlaceTile(this, tile, x, 86, 236, 84);
-                x += 250;
+                x += 250;   // 236 wide plus a 14 pixel gutter; one number keeps the row evenly spaced
             }
         }
 
-        // ---------------------------------------------------------------------
-        //  DATA
-        // ---------------------------------------------------------------------
+        // ----------  DATA  ----------
 
+        // The single refresh path: every button and child form ends up here.
         private void LoadEverything()
         {
-            // Every refresh path in this form funnels through here, so this one guard
-            // stops all of them from firing while the form is still being built.
+            // One guard for every refresh path, while the form is still being built.
             if (_loading) return;
 
             Cursor = Cursors.WaitCursor;   // several round trips follow; the pointer says the form is busy
-            try
+            try   // wraps the whole load, so a failure cannot leave half the screen updated
             {
-                // out parameters rather than four separate calls: GetPharmacyTotals runs ONE
-                // statement containing four scalar subqueries, so the four tiles describe the
-                // same instant. Four separate queries could be interleaved with a checkout and
-                // show an order count that does not match the revenue beside it.
+                // out parameters: ONE statement, so all four tiles describe one instant.
                 int orders, pendingOrders;
-                decimal revenue, commission;
-                // UserSession.PharmacyId, never a value read off a control. This is the
-                // isolation rule in practice: the id is written once at login from the Users
-                // row and there is no textbox, combo box or grid cell on any screen holding
-                // it, so there is nothing a user could edit to widen their own scope.
+                decimal revenue, commission;   // decimal, never double: money must not carry binary rounding error
+                // UserSession.PharmacyId, never a control: nothing on screen holds it.
                 _reports.GetPharmacyTotals(UserSession.PharmacyId, out orders, out revenue,
-                                           out commission, out pendingOrders);
+                                           out commission, out pendingOrders);   // four values, one round trip, one instant in time
 
-                // Two more counts, each scoped by the same session value for the same reason.
-                // Counting in SQL rather than fetching rows and counting them in C# means the
-                // database returns a single number instead of a result set nobody displays.
+                // Counted in SQL, so one number comes back instead of unused rows.
                 int lowStock = _medicines.CountLowStock(UserSession.PharmacyId);
-                int pendingRx = _prescriptions.CountPending(UserSession.PharmacyId);
+                int pendingRx = _prescriptions.CountPending(UserSession.PharmacyId);   // feeds the subtitle only; it has no tile of its own
 
-                _tileOrders.Text = orders.ToString();
-                // UiTheme.Money is used rather than a local ToString("C"), so every money
-                // figure in the application reads "Tk 1,234.00" and none of them depends on
-                // the machine's regional settings.
+                _tileOrders.Text = orders.ToString();   // a plain count, so no currency or thousands formatting is wanted
+                // UiTheme.Money, so every figure reads "Tk 1,234.00" on any machine.
                 _tileRevenue.Text = UiTheme.Money(revenue);
-                _tileCommission.Text = UiTheme.Money(commission);
-                _tileLowStock.Text = lowStock.ToString();
+                _tileCommission.Text = UiTheme.Money(commission);   // same formatter as the tile beside it, so the two figures compare at a glance
+                _tileLowStock.Text = lowStock.ToString();           // the same number the heading below repeats, both taken from this one variable
 
-                // The subtitle carries the counts that are worth knowing but do not deserve a
-                // tile of their own. Naming both queues in one line means the owner sees
-                // outstanding work without opening the orders or prescriptions screens.
+                // The subtitle carries the counts that do not deserve a tile of their own.
                 lblHeaderSub.Text = UserSession.PharmacyName +
-                                    "   |   " + _medicines.CountMedicines(UserSession.PharmacyId) + " medicines listed" +
-                                    "   |   " + pendingOrders + " order(s) waiting to be confirmed" +
-                                    "   |   " + pendingRx + " prescription(s) to verify";
+                                    "   |   " + _medicines.CountMedicines(UserSession.PharmacyId) + " medicines listed" +   // the catalogue size: context, not a task
+                                    "   |   " + pendingOrders + " order(s) waiting to be confirmed" +   // a queue length, so it says what is waiting rather than a bare number
+                                    "   |   " + pendingRx + " prescription(s) to verify";   // "(s)" avoids a singular/plural branch for a line read at a glance
 
-                // The order grid is a separate method because the status filter reloads it on
-                // its own, without re-running the tile queries above.
+                // Its own method, so the status filter can reload the grid alone.
                 LoadOrders();
 
-                // Binding the DataTable is what CREATES the grid's columns, so every rename
-                // below has to come after this line, not before it.
+                // Binding CREATES the columns, so every rename below must come after it.
                 dgvLowStock.DataSource = _medicines.GetLowStock(UserSession.PharmacyId);
-                // The guard matters: if the bind failed or produced no columns, indexing
-                // Columns["MedicineId"] throws. Testing the count first turns a crash into a
-                // grid that is merely unstyled.
+                // Guard: indexing Columns["MedicineId"] would throw if the bind gave none.
                 if (dgvLowStock.Columns.Count > 0)
                 {
-                    // Headers are set in code rather than by aliasing in SQL, so the column
-                    // NAMES stay stable for the code that reads cells by name further down
-                    // while the captions stay readable for the owner.
+                    // Headers in code, so the column NAMES stay stable for cell lookups.
                     dgvLowStock.Columns["MedicineId"].HeaderText = "ID";
-                    // StyleGrid sets AutoSizeColumnsMode to Fill, which makes FillWeight a
-                    // share of the available width rather than a pixel count. An id needs far
-                    // less room than a medicine name, so it is given a small share.
+                    // Fill mode, so FillWeight is a share of the width, not a pixel count.
                     dgvLowStock.Columns["MedicineId"].FillWeight = 30;
-                    dgvLowStock.Columns["MedicineName"].HeaderText = "Medicine";
-                    dgvLowStock.Columns["Strength"].HeaderText = "Strength";
-                    dgvLowStock.Columns["CategoryName"].HeaderText = "Category";
-                    dgvLowStock.Columns["Stock"].HeaderText = "In stock";
-                    dgvLowStock.Columns["MinStock"].HeaderText = "Minimum";
-                    // ShortfallUnits is computed by the query as (MinStock - Stock), so the
-                    // grid shows the number to order without any arithmetic on this side.
+                    dgvLowStock.Columns["MedicineName"].HeaderText = "Medicine";   // no FillWeight: the name gets the default share, which is the largest
+                    dgvLowStock.Columns["Strength"].HeaderText = "Strength";       // "500mg" and the like; part of the identity of a medicine, not a detail
+                    dgvLowStock.Columns["CategoryName"].HeaderText = "Category";   // joined in by the query, so the grid shows the name rather than the id
+                    dgvLowStock.Columns["Stock"].HeaderText = "In stock";          // plain English for what the schema calls Stock
+                    dgvLowStock.Columns["MinStock"].HeaderText = "Minimum";        // the threshold this row fell below, shown beside the actual so the gap is visible
+                    // ShortfallUnits is (MinStock - Stock), computed by the query.
                     dgvLowStock.Columns["ShortfallUnits"].HeaderText = "Order at least";
                 }
 
-                // The panel title carries the state. An empty grid with a heading that still
-                // said "Low stock alert" would read as a screen that had failed to load, so
-                // the zero case says in words that nothing is wrong.
+                // The title carries the state, so an empty grid does not read as a failure.
                 lblLowStockTitle.Text = lowStock == 0
-                    ? "Low stock alert  -  every medicine is above its minimum level"
-                    : "Low stock alert  (" + lowStock + ")  -  double click a row to restock";
+                    ? "Low stock alert  -  every medicine is above its minimum level"   // the all-clear, stated positively so an empty grid reads as good news
+                    : "Low stock alert  (" + lowStock + ")  -  double click a row to restock";   // the count plus the gesture, because the grid itself cannot advertise it
             }
-            catch (Exception ex)
+            catch (Exception ex)   // Exception, not SqlException: survive anything the load throws
             {
-                // One catch around the whole load rather than one per call. A dashboard that
-                // cannot reach the database must SAY so; leaving the previous figures on
-                // screen would present stale numbers as current ones. DbHelper has already
-                // turned the raw SqlException into a sentence worth showing.
+                // One catch for the whole load: stale figures must not read as current.
                 MessageBox.Show("Could not load the dashboard.\r\n\r\n" + ex.Message,
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);   // OK only: there is nothing for the owner to decide, just something to read
             }
-            finally
+            finally   // runs on the success and failure paths alike
             {
-                // finally, not the end of try: an exception must not leave the form stuck
-                // showing an hourglass over a screen that is no longer doing anything.
+                // finally, so a throw cannot leave an hourglass over an idle screen.
                 Cursor = Cursors.Default;
             }
         }
 
+        // Split out so the filter reloads this grid alone; no dialog of its own.
         private void LoadOrders()
         {
-            // Index 0 is "All orders". It is turned into an empty string because the service
-            // query reads it as (@Status = '' OR o.Status = @Status), so one query serves
-            // both the filtered and the unfiltered case and there is no second SQL statement
-            // to keep in step. Testing <= 0 rather than == 0 also covers -1, which is what
-            // SelectedIndex holds when nothing has been chosen yet.
-            string status = cmbOrderStatus.SelectedIndex <= 0 ? "" : cmbOrderStatus.SelectedItem.ToString();
-            // The pharmacy id comes from the session and the status from the screen. Only the
-            // second is user input, and it travels as a parameter, so the filter cannot widen
-            // the scope the first one sets.
+            // Index 0 becomes "", which the query reads as (@Status = '' OR ...).
+            string status = cmbOrderStatus.SelectedIndex <= 0 ? "" : cmbOrderStatus.SelectedItem.ToString();   // <= 0 also covers -1, the no-selection value
+            // Only the status is user input, and it travels as a parameter.
             dgvOrders.DataSource = _orders.GetOrdersForPharmacy(UserSession.PharmacyId, status);
 
             // Same rule as the low stock grid: columns exist only once the DataSource is set.
             if (dgvOrders.Columns.Count > 0)
             {
-                dgvOrders.Columns["OrderId"].HeaderText = "Order";
-                dgvOrders.Columns["OrderId"].FillWeight = 42;
-                dgvOrders.Columns["OrderDate"].HeaderText = "Placed";
-                dgvOrders.Columns["CustomerName"].HeaderText = "Customer";
-                dgvOrders.Columns["CustomerPhone"].HeaderText = "Mobile";
-                // Items is COUNT(OrderItemId) from the query, so it is the number of lines on
-                // the order rather than the number of units.
+                dgvOrders.Columns["OrderId"].HeaderText = "Order";       // the number the owner quotes back to a customer on the phone
+                dgvOrders.Columns["OrderId"].FillWeight = 42;            // a small share: ids are short, and the space belongs to the name beside it
+                dgvOrders.Columns["OrderDate"].HeaderText = "Placed";    // "Placed" rather than "Date": it says WHICH date this column holds
+                dgvOrders.Columns["CustomerName"].HeaderText = "Customer";   // joined from Users by the query; the grid never sees a CustomerId
+                dgvOrders.Columns["CustomerPhone"].HeaderText = "Mobile";    // on the row because the usual next action is to ring about a delivery
+                // Items is COUNT(OrderItemId): lines on the order, not units.
                 dgvOrders.Columns["Items"].HeaderText = "Lines";
-                dgvOrders.Columns["Items"].FillWeight = 34;
-                // Both money columns say "(Tk)" in the header rather than formatting each cell,
-                // which keeps the underlying values numeric and therefore still sortable.
+                dgvOrders.Columns["Items"].FillWeight = 34;   // the narrowest column on the grid; it never holds more than two digits
+                // "(Tk)" in the header, so the cells stay numeric and sortable.
                 dgvOrders.Columns["ItemsTotal"].HeaderText = "Items (Tk)";
-                dgvOrders.Columns["DeliveryCharge"].HeaderText = "Delivery";
-                dgvOrders.Columns["DeliveryCharge"].FillWeight = 45;
-                dgvOrders.Columns["TotalAmount"].HeaderText = "Total (Tk)";
-                dgvOrders.Columns["PaymentMethod"].HeaderText = "Payment";
-                dgvOrders.Columns["Status"].HeaderText = "Status";
-                dgvOrders.Columns["Status"].FillWeight = 50;
-                // RxState is a CASE expression in the query, not a stored column. It is what
-                // the row colouring and the Confirm button both read.
+                dgvOrders.Columns["DeliveryCharge"].HeaderText = "Delivery";     // kept as its own column so Items plus Delivery visibly makes the Total
+                dgvOrders.Columns["DeliveryCharge"].FillWeight = 45;             // a flat charge, so it is always short and needs little room
+                dgvOrders.Columns["TotalAmount"].HeaderText = "Total (Tk)";      // the figure the customer actually pays, and the one the tiles sum
+                dgvOrders.Columns["PaymentMethod"].HeaderText = "Payment";       // cash on delivery or card, which changes what dispatch has to collect
+                dgvOrders.Columns["Status"].HeaderText = "Status";               // the lifecycle value the four action buttons below are enabled from
+                dgvOrders.Columns["Status"].FillWeight = 50;                     // wide enough for "Confirmed", the longest value it can hold
+                // RxState is a CASE expression, read by the colouring and by Confirm.
                 dgvOrders.Columns["RxState"].HeaderText = "Prescription";
-                // Hidden, not dropped from the SELECT. The address is far too long for a grid
-                // row, but keeping it in the DataTable means the row still carries it and the
-                // service query stays as it is for anything else that needs the column.
+                // Hidden, not dropped: the row still carries the address for other callers.
                 dgvOrders.Columns["DeliveryAddress"].Visible = false;
             }
 
-            // Rebinding replaces the rows, so whatever was selected is gone and the four
-            // action buttons have to be re-evaluated against the new selection.
+            // Rebinding clears the selection, so the four buttons must be re-evaluated.
             UpdateOrderButtons();
         }
 
+        // Wired in ApplyTheme; sender is unused, the grid is already a field.
         private void dgvOrders_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
-            // CellFormatting fires once per CELL as it is painted, including while the user
-            // scrolls, so this handler must stay cheap and must never touch the database.
-            // Everything it needs is already on the row.
-            //
-            // The guard covers two real cases: RowIndex is -1 for the header row, and the
-            // event can fire while the grid is being rebound, when there are no columns to
-            // index by name yet.
+            // Fires per CELL while scrolling, so it stays cheap; -1 is the header row.
             if (e.RowIndex < 0 || dgvOrders.Columns.Count == 0) return;
 
-            DataGridViewRow row = dgvOrders.Rows[e.RowIndex];
-            object status = row.Cells["Status"].Value;
-            object rx = row.Cells["RxState"].Value;
-            // A row can be mid-bind with its cells not yet populated; painting would then
-            // throw on the ToString calls below.
+            DataGridViewRow row = dgvOrders.Rows[e.RowIndex];   // the whole row: the colour goes on the line, not on e.CellStyle
+            object status = row.Cells["Status"].Value;          // typed as object: a cell holds a boxed value that may still be DBNull
+            object rx = row.Cells["RxState"].Value;             // the CASE expression from the query, not a stored column
+            // A row can be mid-bind with empty cells, and ToString below would throw.
             if (status == null) return;
 
-            // The order of the tests IS the priority. A prescription still waiting outranks
-            // the order status, because that is the row the owner has to act on, so it wins
-            // even when the order is otherwise a perfectly ordinary Placed order.
+            // Order IS priority: a waiting prescription outranks the order status.
             if (rx != null && rx.ToString() == "Waiting on Rx")
                 row.DefaultCellStyle.BackColor = Color.FromArgb(255, 246, 224);   // amber: needs a decision
-            else if (status.ToString() == "Delivered")
+            else if (status.ToString() == "Delivered")   // reached only when the prescription is settled, so the status is free to speak
                 row.DefaultCellStyle.BackColor = UiTheme.DeliveredBack;           // green: finished, nothing to do
-            else if (status.ToString() == "Cancelled")
+            else if (status.ToString() == "Cancelled")   // after Delivered, because the two never overlap and this is the rarer case
                 row.DefaultCellStyle.BackColor = Color.FromArgb(240, 240, 240);   // grey: dead row, kept for history
-            else
-                // The explicit white branch is not redundant. DataGridViewRow objects are
-                // REUSED as the grid scrolls, so a row left unpainted keeps the colour of
-                // whichever row previously occupied that slot, and cancelled orders would
-                // appear to be scattered anywhere in the list.
+            else   // Placed and Confirmed both land here, the ordinary rows
+                // Rows are REUSED as the grid scrolls, so white must be set explicitly.
                 row.DefaultCellStyle.BackColor = Color.White;
 
-            // Setting DefaultCellStyle on the ROW rather than e.CellStyle on the cell colours
-            // the whole line in one assignment, which is what makes the status readable as a
-            // band across the grid instead of a single tinted cell.
+            // Row-level styling, so the status reads as a band across the grid.
         }
 
+        // The low stock painter: simpler, because the query already chose the rows.
         private void dgvLowStock_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
             if (e.RowIndex < 0) return;   // the header row has index -1 and has nothing to colour
 
-            // No condition here, unlike the orders grid: the query behind this grid already
-            // filtered to Stock < MinStock, so every row present IS a low stock row and the
-            // whole grid is painted. Re-testing the numbers in C# would be a second copy of
-            // the rule that could disagree with the WHERE clause.
-            //
-            // LowStockBack is a pale red rather than a saturated one. The row has to read as
-            // an alert while black text on top of it stays legible, and it is the same colour
-            // the inventory and medicine screens use, so red means one thing everywhere.
-            dgvLowStock.Rows[e.RowIndex].DefaultCellStyle.BackColor = UiTheme.LowStockBack;
+            // No condition: the query already filtered to Stock < MinStock, so all rows.
+            dgvLowStock.Rows[e.RowIndex].DefaultCellStyle.BackColor = UiTheme.LowStockBack;   // pale red, the same alert colour the inventory screens use
         }
 
-        // ---------------------------------------------------------------------
-        //  ORDER ACTIONS
-        // ---------------------------------------------------------------------
+        // ----------  ORDER ACTIONS  ----------
 
-        // Moving the selection changes which order the four buttons would act on, so their
-        // enabled state is recalculated rather than left describing the previous row.
+        // Moving the selection changes which order the four buttons would act on.
         private void dgvOrders_SelectionChanged(object sender, EventArgs e) => UpdateOrderButtons();
 
+        // Recomputed from scratch, so no path can leave a stale button enabled.
         private void UpdateOrderButtons()
         {
-            DataGridViewRow row = dgvOrders.CurrentRow;
-            // CurrentRow is null on an empty grid, and its cells can still be unpopulated
-            // during a rebind, so both conditions are needed before any cell is read.
+            DataGridViewRow row = dgvOrders.CurrentRow;   // CurrentRow, not SelectedRows[0], which throws when the selection is empty
+            // Null on an empty grid, and cells can be unpopulated during a rebind.
             bool hasRow = row != null && row.Cells["Status"].Value != null;
 
-            // hasRow is tested before each read, and the empty string stands in when there is
-            // no row, so the comparisons below are plain string tests with no null checks
-            // scattered through them.
+            // "" stands in when there is no row, so the tests below need no null checks.
             string status = hasRow ? row.Cells["Status"].Value.ToString() : "";
-            string rxState = hasRow && row.Cells["RxState"].Value != null
-                ? row.Cells["RxState"].Value.ToString() : "";
+            string rxState = hasRow && row.Cells["RxState"].Value != null   // RxState gets its own null test: unlike Status it can legitimately be absent
+                ? row.Cells["RxState"].Value.ToString() : "";               // "" is a value no CASE branch produces, so it can never be mistaken for "Clear"
 
-            // An order whose prescription is still Pending cannot be confirmed,
-            // and the button explains why rather than failing silently.
-            // The four buttons encode the order lifecycle:
-            //      Placed -> Confirmed -> Delivered,  with Cancelled available until
-            //      the order has actually been delivered.
-            // Each button is enabled only for the status it can legally act on, so an
-            // illegal transition is unreachable rather than merely refused.
-            //
-            // Confirm additionally needs rxState == "Clear". That value is computed by
-            // the ORDER QUERY, not here: a CASE with an EXISTS against Prescriptions.
-            // The same rule is enforced again inside OrderService.Confirm, so disabling
-            // the button is a courtesy and the database is the guarantee.
-            btnConfirmOrder.Enabled = hasRow && status == "Placed" && rxState == "Clear";
-            btnDeliverOrder.Enabled = hasRow && status == "Confirmed";
+            // Placed -> Confirmed -> Delivered; each button is enabled only for its step.
+            btnConfirmOrder.Enabled = hasRow && status == "Placed" && rxState == "Clear";   // Confirm also needs rxState Clear; OrderService.Confirm enforces it too
+            btnDeliverOrder.Enabled = hasRow && status == "Confirmed";   // only the step after Confirm, so Placed can never jump straight to Delivered
             // Cancel restocks, so it must not be possible once the goods are delivered.
             btnCancelOrder.Enabled = hasRow && status != "Delivered" && status != "Cancelled";
             btnViewInvoice.Enabled = hasRow;   // an invoice exists for any order, any status
 
-            // A disabled button with no explanation reads as a broken screen. Renaming it
-            // turns "why can I not press this" into the actual reason, and the text goes
-            // back on the next selection because the else branch always restores it.
+            // A disabled button with no reason reads as broken, so it names the blocker.
             if (hasRow && status == "Placed" && rxState != "Clear")
-                btnConfirmOrder.Text = "Rx not verified";
-            else
-                btnConfirmOrder.Text = "Confirm order";
+                btnConfirmOrder.Text = "Rx not verified";   // names the blocker on the button itself, where the owner is already looking
+            else   // every other case, including no selection at all, gets the ordinary label back
+                btnConfirmOrder.Text = "Confirm order";     // always restored, so the label from the previous row cannot linger
         }
 
+        // One place that answers "which order is selected", used by all four buttons.
         private int SelectedOrderId()
         {
-            // 0 is the "nothing is selected" answer. No order can have id 0 because OrderId
-            // is an IDENTITY starting at 1, so every caller can test for it without needing a
-            // nullable int or a second out parameter.
+            // 0 means nothing selected: OrderId is an IDENTITY starting at 1.
             if (dgvOrders.CurrentRow == null) return 0;
-            // Convert.ToInt32 rather than a cast: the cell holds a boxed value whose exact
-            // CLR type depends on the column type the provider chose, and an (int) cast on a
-            // boxed value of any other numeric type throws at run time.
+            // Convert.ToInt32, not a cast: an (int) cast on another boxed type throws.
             return Convert.ToInt32(dgvOrders.CurrentRow.Cells["OrderId"].Value);
         }
 
+        // Placed -> Confirmed, and the only one of the four that reports its failure.
         private void btnConfirmOrder_Click(object sender, EventArgs e)
         {
-            int orderId = SelectedOrderId();
+            int orderId = SelectedOrderId();   // read once, so the message and the call cannot name different orders
             if (orderId == 0) return;   // nothing selected; the button should be disabled anyway
 
-            // Both ids are passed. The order id says WHICH row and the session's pharmacy id
-            // says it must be one of yours, so aiming this at another shop's order id simply
-            // matches no row and changes nothing. Confirm returns true only when exactly one
-            // row was updated, which is the database reporting what it actually did.
+            // Both ids: another shop's order id simply matches no row and changes nothing.
             if (_orders.Confirm(orderId, UserSession.PharmacyId))
             {
-                MessageBox.Show("Order " + orderId + " confirmed and is ready for dispatch.",
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Order " + orderId + " confirmed and is ready for dispatch.",   // names the id, so a mis-click on the wrong row is visible immediately
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Information);   // the information icon, because nothing went wrong here
             }
-            else
+            else   // false means zero rows changed, which is the database's own report, not a guess
             {
-                // false means the UPDATE matched nothing. The message names the clause that
-                // refused it, because the most likely cause is a prescription that was
-                // approved on another screen a moment ago and is no longer approved, and an
-                // unexplained "could not be confirmed" would send the owner looking at the
-                // wrong screen.
+                // The message names the clause that refused it, not just "it failed".
                 MessageBox.Show(
-                    "Order " + orderId + " could not be confirmed.\r\n\r\n" +
-                    "The UPDATE carries NOT EXISTS (SELECT 1 FROM Prescriptions WHERE VerifyStatus <> 'Approved'), " +
-                    "so an order with an unverified prescription is refused by the database, not just by this form.",
-                    "Cannot confirm", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "Order " + orderId + " could not be confirmed.\r\n\r\n" +   // the blank line separates what happened from why
+                    "The UPDATE carries NOT EXISTS (SELECT 1 FROM Prescriptions WHERE VerifyStatus <> 'Approved'), " +   // quotes the actual clause, so the reason can be checked rather than believed
+                    "so an order with an unverified prescription is refused by the database, not just by this form.",   // the point: the guard survives even if this screen were bypassed
+                    "Cannot confirm", MessageBoxButtons.OK, MessageBoxIcon.Warning);   // warning, not error: the action was refused, nothing went wrong
             }
-            // Reloaded on BOTH paths. After a success the row must show its new status, and
-            // after a failure the screen has to be re-read from the database, because a stale
-            // grid is exactly what let the attempt be made.
+            // Reloaded on BOTH paths: a stale grid is what let the attempt be made.
             LoadEverything();
         }
 
+        // Confirmed -> Delivered, the last step of the lifecycle and the quietest one.
         private void btnDeliverOrder_Click(object sender, EventArgs e)
         {
-            int orderId = SelectedOrderId();
-            if (orderId == 0) return;
+            int orderId = SelectedOrderId();   // the same helper as the other three, so "which row" means one thing
+            if (orderId == 0) return;          // defensive: a keyboard shortcut could still land here
 
-            // No confirmation dialog: marking an order delivered is the routine end of the
-            // lifecycle and prompting for every one of them would train the owner to click
-            // Yes without reading. Cancel, which moves stock, does prompt.
-            //
-            // The return value is deliberately not read here, so a refused update, which
-            // happens when the order is no longer Confirmed, produces no message. The reload
-            // on the next line is what shows that the status did not change.
-            _orders.MarkDelivered(orderId, UserSession.PharmacyId);
-            LoadEverything();
+            // No prompt: this is the routine end of the lifecycle, unlike Cancel.
+            _orders.MarkDelivered(orderId, UserSession.PharmacyId);   // the result is not read; the reload below shows whether it changed
+            LoadEverything();   // the colour and the four buttons both depend on the status just changed
         }
 
+        // The destructive one: it ends the order AND returns the units to the shelf.
         private void btnCancelOrder_Click(object sender, EventArgs e)
         {
-            int orderId = SelectedOrderId();
-            if (orderId == 0) return;
+            int orderId = SelectedOrderId();   // captured before the dialog, so the prompt names the row the user was looking at
+            if (orderId == 0) return;          // no selection, nothing to cancel, and no dialog is worth showing
 
-            // Cancel is the one action that moves stock, so it asks first. The message says
-            // what will happen to the units rather than only "are you sure", because the
-            // restock is the part the owner cannot see on this screen.
+            // Cancel is the one action that moves stock, so it asks first.
             DialogResult answer = MessageBox.Show(
-                "Cancel order " + orderId + "?\r\n\r\n" +
-                "The units on this order are put back on the shelf inside the same transaction.",
-                "Cancel order", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                "Cancel order " + orderId + "?\r\n\r\n" +   // the id is in the question itself, so the wrong row cannot be cancelled by reflex
+                "The units on this order are put back on the shelf inside the same transaction.",   // states the side effect, which is the part the grid cannot show
+                "Cancel order", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);   // Yes/No rather than OK/Cancel: the question is a decision, not an acknowledgement
 
-            // Tested against Yes rather than for No, so closing the dialog with the cross or
-            // the Escape key also counts as "do nothing". Any answer that is not an explicit
-            // Yes leaves the order alone.
+            // Tested against Yes, so Escape and the close cross also mean do nothing.
             if (answer != DialogResult.Yes) return;
 
-            // The restock and the status change happen inside one transaction in the service,
-            // so the form cannot end up with the units returned and the order still open.
+            // Restock and status change share one transaction inside the service.
             _orders.Cancel(orderId, UserSession.PharmacyId);
             LoadEverything();   // the tiles change too: a cancelled order leaves the revenue total
         }
 
+        // The only read-only action here, which is why every status enables it.
         private void btnViewInvoice_Click(object sender, EventArgs e)
         {
-            int orderId = SelectedOrderId();
-            if (orderId == 0) return;
+            int orderId = SelectedOrderId();   // the invoice is built from the id alone; InvoiceForm re-reads the order itself
+            if (orderId == 0) return;          // nothing selected, so there is no invoice to open
 
-            // using, so the dialog's window handles are released as soon as it closes rather
-            // than waiting for a collection. ShowDialog(this) both blocks until the invoice is
-            // closed and names this form as the owner, which keeps the invoice in front of the
-            // dashboard instead of disappearing behind it.
+            // using releases the handles; ShowDialog(this) blocks and keeps it in front.
             using (InvoiceForm invoice = new InvoiceForm(orderId))
             {
-                invoice.ShowDialog(this);
+                invoice.ShowDialog(this);   // modal, so the owner cannot act on a different order while reading this one
             }
-            // No reload afterwards: an invoice is read only, so nothing behind it can have changed.
+            // No reload: an invoice is read only, so nothing behind it changed.
         }
 
+        // Double click opens that medicine's editor, the row already pointed at.
         private void dgvLowStock_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0) return;   // double clicking the header must not open an editor
-            int medicineId = Convert.ToInt32(dgvLowStock.Rows[e.RowIndex].Cells["MedicineId"].Value);
+            int medicineId = Convert.ToInt32(dgvLowStock.Rows[e.RowIndex].Cells["MedicineId"].Value);   // e.RowIndex, not CurrentRow: the double click names its own row
 
-            // Double click is the shortcut the panel title advertises. The second argument
-            // tells the editor this was opened to restock, so it puts the caret in the stock
-            // box rather than making the owner find it.
+            // The second argument says "opened to restock", so the caret goes there.
             using (MedicineEditorForm editor = new MedicineEditorForm(medicineId, true))
             {
-                editor.ShowDialog(this);
+                editor.ShowDialog(this);   // blocks here, so the reload below cannot run against a half-finished edit
             }
-            // The editor may have changed the stock, which moves the low stock count, the
-            // alert grid and the tile above it, so the whole dashboard is re-read.
+            // The edit may move the stock, the alert grid and the tile, so re-read all.
             LoadEverything();
         }
 
-        // ---------------------------------------------------------------------
-        //  NAVIGATION
-        // ---------------------------------------------------------------------
+        // ----------  NAVIGATION  ----------
 
+        // Typed as Form, which is what lets all eight sidebar buttons share it.
         private void OpenChild(Form child)
         {
-            // One method for every sidebar destination, so the open-modally-then-refresh
-            // pattern exists once instead of eight times. using disposes the child form after
-            // it closes; ShowDialog blocks, so the reload below runs only once the user is
-            // finished with it.
+            // The open-modally-then-refresh pattern, written once instead of eight times.
             using (child)
             {
-                child.ShowDialog(this);
+                child.ShowDialog(this);   // "this" as the owner keeps the child in front of the dashboard
             }
-            // Any child screen may have changed something this dashboard reports: adding a
-            // medicine, restocking, verifying a prescription. Refreshing unconditionally on
-            // return is cheaper than working out which screens matter, and it means the
-            // figures can never be left describing the state before the child was opened.
+            // Any child may have changed what this reports, so refresh unconditionally.
             LoadEverything();
         }
 
-        // Each sidebar button is a one line expression body because the whole behaviour is
-        // "open this form modally and then refresh". None of them passes a pharmacy id: every
-        // child form reads UserSession.PharmacyId itself, so there is no route by which a
-        // caller could hand a child the wrong shop.
-        private void btnMedicines_Click(object sender, EventArgs e) => OpenChild(new AdminMedicineForm());
-        private void btnInventory_Click(object sender, EventArgs e) => OpenChild(new AdminInventoryForm());
-        private void btnPrescriptions_Click(object sender, EventArgs e) => OpenChild(new VerifyPrescriptionForm());
-        private void btnEarnings_Click(object sender, EventArgs e) => OpenChild(new AdminEarningsForm());
-        private void btnOffers_Click(object sender, EventArgs e) => OpenChild(new DiscountOffersForm());
-        private void btnReviews_Click(object sender, EventArgs e) => OpenChild(new AdminReviewsForm());
-        private void btnShopProfile_Click(object sender, EventArgs e) => OpenChild(new PharmacyProfileForm());
-        private void btnMyProfile_Click(object sender, EventArgs e) => OpenChild(new MyProfileForm());
-        private void btnRefresh_Click(object sender, EventArgs e) => LoadEverything();
-        // Only the order grid is reloaded when the filter changes, not the tiles: the tiles
-        // count every order regardless of status, so re-running those queries would cost four
-        // round trips to display exactly the same four numbers.
+        // One line each: open modally, then refresh. None passes a pharmacy id.
+        private void btnMedicines_Click(object sender, EventArgs e) => OpenChild(new AdminMedicineForm());   // every child reads UserSession.PharmacyId itself
+        private void btnInventory_Click(object sender, EventArgs e) => OpenChild(new AdminInventoryForm());        // stock in and out; changes the low stock grid, hence the reload
+        private void btnPrescriptions_Click(object sender, EventArgs e) => OpenChild(new VerifyPrescriptionForm());   // approving here is what unblocks Confirm on an order
+        private void btnEarnings_Click(object sender, EventArgs e) => OpenChild(new AdminEarningsForm());          // the same money the tiles summarise, broken down by period
+        private void btnOffers_Click(object sender, EventArgs e) => OpenChild(new DiscountOffersForm());           // discounts change displayed prices, so the totals are re-read on return
+        private void btnReviews_Click(object sender, EventArgs e) => OpenChild(new AdminReviewsForm());            // read-only for the owner; moderation belongs to the Super Admin
+        private void btnShopProfile_Click(object sender, EventArgs e) => OpenChild(new PharmacyProfileForm());     // editing the shop name changes the sidebar and the subtitle
+        private void btnMyProfile_Click(object sender, EventArgs e) => OpenChild(new MyProfileForm());             // the person rather than the shop; the second line of the sidebar
+        private void btnRefresh_Click(object sender, EventArgs e) => LoadEverything();                             // the manual path into the same reload every other handler uses
+        // Only the grid reloads: the tiles count every order, whatever the filter.
         private void cmbOrderStatus_SelectedIndexChanged(object sender, EventArgs e) { if (!_loading) LoadOrders(); }
 
+        // The one button that ends the session, hence the only red one on the sidebar.
         private void btnLogout_Click(object sender, EventArgs e)
         {
             // Logging out is one click next to seven navigation buttons, so it asks first.
             DialogResult answer = MessageBox.Show("Log out of PharmaLink?", "Log out",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);   // the question icon: nothing has gone wrong and nothing is warned about
 
-            if (answer == DialogResult.Yes)
+            if (answer == DialogResult.Yes)   // tested for Yes, so Escape and the close cross both mean stay logged in
             {
-                // Clear BEFORE Close. The session is static and lives as long as the process,
-                // so leaving PharmacyId set would carry this shop's scope into whoever logs in
-                // next. LoginForm also clears it in its FormClosed handler, which is the one
-                // place that catches every way a dashboard can end; doing it here as well
-                // costs nothing and does not depend on that handler being wired.
+                // Clear BEFORE Close: the session is static and outlives this form.
                 UserSession.Clear();
-                // Closing this form does not end the application. LoginForm hid itself when it
-                // opened this dashboard and subscribed to its FormClosed event, so closing
-                // here brings the login screen back rather than stopping the message loop.
+                // Closing does not end the app: LoginForm reappears on FormClosed.
                 Close();
             }
         }

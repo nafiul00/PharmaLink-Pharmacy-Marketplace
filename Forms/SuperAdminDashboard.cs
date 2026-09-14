@@ -1,471 +1,305 @@
 using System.Data;                  // DataTable, the shape every service read hands back
-using System.Drawing;               // Color, Font, Point and Size, needed because the tiles are built in code
+using System.Drawing;               // Color, Font, Point and Size, because the tiles are built in code
 using System.Windows.Forms;         // Form, Label, Panel, DataGridView and MessageBox
-using PharmaLinkApp.Helpers;        // UiTheme, the one palette and control style the whole application shares
-using PharmaLinkApp.Services;       // PharmacyService and ReportService, the only route this form has to the data
+using PharmaLinkApp.Helpers;        // UiTheme, the one palette the whole application shares
+using PharmaLinkApp.Services;       // PharmacyService and ReportService, this form's only route to data
 
-namespace PharmaLinkApp.Forms
+namespace PharmaLinkApp.Forms   // UserSession sits one level up, beside Program.cs
 {
-    // -------------------------------------------------------------------------
-    //  Layer: presentation.  Opened by LoginForm when the Users row says
-    //  UserType = 'SuperAdmin'. Uses ReportService for the figures and
-    //  PharmacyService for the approval queue.
-    //
-    //  Load order:
-    //      SuperAdminDashboard_Load -> ApplyTheme -> BuildTiles -> LoadEverything
-    //
-    //  LoadEverything is the only method that reads data, and every action on
-    //  this screen finishes by calling it again. That is deliberate: there is
-    //  exactly one refresh path, so no button can leave the tiles agreeing with
-    //  a grid that has since changed underneath them.
-    //
-    //  There is no SQL in this file. UserSession is resolved from the enclosing
-    //  PharmaLinkApp namespace rather than from a using directive, because it
-    //  sits at the root of the project beside Program.cs.
-    // -------------------------------------------------------------------------
+    // Presentation layer: no SQL here. Opened by LoginForm for UserType 'SuperAdmin'.
 
-    /// <summary>
-    /// The platform operator's hub (requirements 1 to 9).
-    ///
-    /// Four summary tiles, the queue of pharmacies waiting for approval, and the
-    /// low rated pharmacy panel that comes straight from the
-    /// HAVING AVG(Rating) &lt; 2.5 query. The left menu is the entry point to
-    /// every other Super Admin form, and every one of them has a Back button.
-    /// </summary>
+    /// <summary>The platform operator's hub (requirements 1 to 9).</summary>
     public partial class SuperAdminDashboard : Form
     {
-        // One service object per form, created once and reused by every handler below.
-        // readonly says the reference is never reassigned after construction, which is
-        // what stops a later edit from quietly pointing _reports at a second instance.
-        // Neither service holds a connection of its own, so keeping them alive for the
-        // lifetime of the form costs nothing: DbHelper opens and closes a connection
-        // inside each individual call.
-        private readonly PharmacyService _pharmacies = new PharmacyService();
-        private readonly ReportService _reports = new ReportService();
+        private readonly PharmacyService _pharmacies = new PharmacyService();   // one service per form, reused by every handler
+        private readonly ReportService _reports = new ReportService();   // kept beside it so both are created once per window
 
-        // The four Labels that hold the tile NUMBERS, handed back by UiTheme.BuildTile
-        // through out parameters. They are kept in fields rather than looked up from
-        // Controls by name, so refreshing the dashboard is four text assignments instead
-        // of a search through the control tree, and a typo in a control name becomes a
-        // compile error rather than a run time one.
-        private Label _tilePharmacies;
-        private Label _tileCustomers;
-        private Label _tileOrders;
-        private Label _tileCommission;
+        // The four tile NUMBER labels, kept in fields so a refresh is four assignments.
+        private Label _tilePharmacies;   // the approved pharmacies figure
+        private Label _tileCustomers;   // the registered customers figure
+        private Label _tileOrders;   // the orders placed figure
+        private Label _tileCommission;   // the commission earned figure
 
+        // Nothing that can fail belongs here; that goes in Load, where a window exists.
         public SuperAdminDashboard()
         {
-            // InitializeComponent is the designer generated method that creates every
-            // control and sets its position. Nothing else belongs in a constructor here:
-            // reading the database at construction time would run before the window has
-            // a handle, so a failure would have nowhere to show a message.
-            InitializeComponent();
+            InitializeComponent();   // designer-generated: creates every control and places it
         }
 
+        // Wired to the form's Load event by the designer, so it runs once per instance.
         private void SuperAdminDashboard_Load(object sender, EventArgs e)
         {
-            // Load fires once, after the window exists but before it is painted, which is
-            // the right moment for all three of these. Styling first so the user never
-            // sees the default grey, then the tiles, then the data that fills them.
-            ApplyTheme();
-            BuildTiles();
-            LoadEverything();
+            ApplyTheme();   // styling first, so the user never sees the default grey
+            BuildTiles();   // then the tiles, which must exist before anything can write into them
+            LoadEverything();   // and only then the data, so nothing is written to a missing control
         }
 
+        // All the styling in one place, so a palette change is a single edit here.
         private void ApplyTheme()
         {
-            UiTheme.StyleForm(this, "Super Admin");
+            UiTheme.StyleForm(this, "Super Admin");   // title, icon and background in one shared call
 
-            panelSide.BackColor = UiTheme.Sidebar;
-            lblBrand.Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold);
-            lblBrand.ForeColor = Color.White;
-            lblRole.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);
-            lblRole.ForeColor = Color.FromArgb(140, 205, 185);
-            lblUserName.Font = UiTheme.FontSmall;
-            lblUserName.ForeColor = Color.FromArgb(190, 205, 216);
-            lblUserName.Text = UserSession.FullName;
+            panelSide.BackColor = UiTheme.Sidebar;   // the dark rail behind the menu
+            lblBrand.Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold);   // Semibold at 15 reads as a logo, not a caption
+            lblBrand.ForeColor = Color.White;   // the only colour with enough contrast on the dark rail
+            lblRole.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);   // small and bold, so it reads as a label
+            lblRole.ForeColor = Color.FromArgb(140, 205, 185);   // a muted green, legible without competing with the brand
+            lblUserName.Font = UiTheme.FontSmall;   // the signed-in name shares the small font with the role
+            lblUserName.ForeColor = Color.FromArgb(190, 205, 216);   // a soft grey-blue: quiet until looked for
+            lblUserName.Text = UserSession.FullName;   // read from UserSession, so it is whoever logged in
 
-            foreach (Button button in new[] { btnManagePharmacies, btnManageUsers, btnCategories,
-                                              btnSalesReport, btnLowRated, btnModerateReviews })
+            foreach (Button button in new[] { btnManagePharmacies, btnManageUsers, btnCategories,   // one array, so no button is styled differently by accident
+                                              btnSalesReport, btnLowRated, btnModerateReviews })   // the order here is the order on screen
             {
-                UiTheme.StyleSidebarButton(button);
+                UiTheme.StyleSidebarButton(button);   // one shared style, so a new item only joins the array
             }
 
-            UiTheme.StyleSidebarButton(btnLogout);
-            btnLogout.BackColor = UiTheme.Danger;
-            btnLogout.FlatAppearance.MouseOverBackColor = Color.FromArgb(205, 60, 60);
+            UiTheme.StyleSidebarButton(btnLogout);   // the same base style first, so it sits on the same grid
+            btnLogout.BackColor = UiTheme.Danger;   // then red, because logout is the destructive item
+            btnLogout.FlatAppearance.MouseOverBackColor = Color.FromArgb(205, 60, 60);   // darker red on hover, acknowledging the pointer
 
-            panelHeader.BackColor = UiTheme.Primary;
-            lblHeaderTitle.Font = UiTheme.FontTitle;
-            lblHeaderTitle.ForeColor = Color.White;
-            lblHeaderSub.Font = UiTheme.FontSmall;
-            lblHeaderSub.ForeColor = Color.FromArgb(200, 230, 220);
-            UiTheme.StyleSecondary(btnRefresh);
+            panelHeader.BackColor = UiTheme.Primary;   // the header band picks up the brand colour
+            lblHeaderTitle.Font = UiTheme.FontTitle;   // the largest font in the theme, used once per screen
+            lblHeaderTitle.ForeColor = Color.White;   // white, because the band behind it is the brand colour
+            lblHeaderSub.Font = UiTheme.FontSmall;   // the subtitle carries figures, not identity
+            lblHeaderSub.ForeColor = Color.FromArgb(200, 230, 220);   // a pale green that sits on the band without shouting
+            UiTheme.StyleSecondary(btnRefresh);   // secondary, since Refresh only repeats what Load did
 
-            lblPendingTitle.Font = UiTheme.FontHeading;
-            lblPendingTitle.ForeColor = UiTheme.TextDark;
-            lblPendingHint.Font = UiTheme.FontSmall;
-            lblPendingHint.ForeColor = UiTheme.TextMuted;
+            lblPendingTitle.Font = UiTheme.FontHeading;   // section headings share one font, so the panels read as equals
+            lblPendingTitle.ForeColor = UiTheme.TextDark;   // near-black on white, the body colour of the application
+            lblPendingHint.Font = UiTheme.FontSmall;   // the hint is one step down in size
+            lblPendingHint.ForeColor = UiTheme.TextMuted;   // and one step down in contrast
 
-            lblLowRatedTitle.Font = UiTheme.FontHeading;
-            lblLowRatedTitle.ForeColor = UiTheme.TextDark;
-            lblLowRatedHint.Font = UiTheme.FontSmall;
-            lblLowRatedHint.ForeColor = UiTheme.TextMuted;
+            lblLowRatedTitle.Font = UiTheme.FontHeading;   // the low rated heading, styled identically
+            lblLowRatedTitle.ForeColor = UiTheme.TextDark;   // so neither panel looks more important
+            lblLowRatedHint.Font = UiTheme.FontSmall;   // its hint matches too
+            lblLowRatedHint.ForeColor = UiTheme.TextMuted;   // keeping both panels visually parallel
 
-            UiTheme.StyleGrid(dgvPending);
-            UiTheme.StyleGrid(dgvLowRated);
-            dgvLowRated.CellFormatting += dgvLowRated_CellFormatting;
+            UiTheme.StyleGrid(dgvPending);   // centralised, so every table scrolls and selects alike
+            UiTheme.StyleGrid(dgvLowRated);   // the second grid gets exactly the same treatment
+            dgvLowRated.CellFormatting += dgvLowRated_CellFormatting;   // wired in code, beside the styling it belongs with
 
-            UiTheme.StyleSuccess(btnApprove);
-            UiTheme.StyleDanger(btnReject);
-            UiTheme.StyleSecondary(btnOpenPharmacies);
+            UiTheme.StyleSuccess(btnApprove);   // green, because Approve is the affirmative action
+            UiTheme.StyleDanger(btnReject);   // red, so the colour carries the meaning before the label
+            UiTheme.StyleSecondary(btnOpenPharmacies);   // neutral, because opening a list is neither
         }
 
-        /// <summary>The four headline figures, built in code so the layout stays in one place.</summary>
+        /// <summary>The four headline figures, built in code.</summary>
         private void BuildTiles()
         {
-            // BuildTile returns the Panel and, through the out parameter, the Label inside
-            // it that holds the number. Taking both back in one call is what lets the tile
-            // be styled once here and refreshed cheaply for the rest of the session.
-            //
-            // The colour is the only thing that differs between the four, and each one is
-            // a named UiTheme constant rather than a literal Color, so the stripe on this
-            // screen matches the button of the same meaning everywhere else in the product.
+            // BuildTile returns the Panel and, through out, the Label holding the number.
             Panel t1 = UiTheme.BuildTile("APPROVED PHARMACIES", UiTheme.Primary, out _tilePharmacies);
-            Panel t2 = UiTheme.BuildTile("REGISTERED CUSTOMERS", UiTheme.Accent, out _tileCustomers);
-            Panel t3 = UiTheme.BuildTile("ORDERS PLACED", UiTheme.Success, out _tileOrders);
-            Panel t4 = UiTheme.BuildTile("COMMISSION EARNED", UiTheme.Warning, out _tileCommission);
+            Panel t2 = UiTheme.BuildTile("REGISTERED CUSTOMERS", UiTheme.Accent, out _tileCustomers);   // Accent, so customers read as a different measure
+            Panel t3 = UiTheme.BuildTile("ORDERS PLACED", UiTheme.Success, out _tileOrders);   // Success green: orders mean the platform is working
+            Panel t4 = UiTheme.BuildTile("COMMISSION EARNED", UiTheme.Warning, out _tileCommission);   // Warning amber, the figure watched most closely
 
-            // 250 is where the content column starts: the sidebar is 230 wide, so this
-            // clears it with a 20 pixel gutter and lines the tiles up with the grid
-            // headings below them, which the designer also places at x = 250.
-            int x = 250;
-            foreach (Panel tile in new[] { t1, t2, t3, t4 })
+            int x = 250;   // the sidebar is 230 wide, so this clears it with a 20 pixel gutter
+            foreach (Panel tile in new[] { t1, t2, t3, t4 })   // an array literal, so the rule below is written once
             {
-                // One call replaces four lines. PlaceTile sets the location and size,
-                // adds the tile to the FORM rather than to a container, and brings it to
-                // the front, because the designer's own controls were added first and
-                // would otherwise paint over it. Centralised in UiTheme so every
-                // dashboard places its tiles the same way on a scaled display.
-                UiTheme.PlaceTile(this, tile, x, 88, 236, 84);
-                x += 250;
+                UiTheme.PlaceTile(this, tile, x, 88, 236, 84);   // sets bounds, adds to the form, brings to front
+                x += 250;   // 236 wide plus a 14 pixel gap, which ends the row flush with the grids
             }
         }
 
-        // ---------------------------------------------------------------------
-        //  DATA
-        // ---------------------------------------------------------------------
+        // ------------------------------  DATA  ------------------------------
 
+        // The single refresh path; every button on this screen ends by calling it.
         private void LoadEverything()
         {
-            // An hourglass for the whole method, because everything below is a round trip
-            // to SQL Server and a window that does not acknowledge the click reads as
-            // frozen. It is restored in the finally block so it cannot be left behind.
-            Cursor = Cursors.WaitCursor;
-            try
+            Cursor = Cursors.WaitCursor;   // everything below is a round trip, so acknowledge the click
+            try   // a half read dashboard is worse than an error, so the whole load is guarded
             {
-                // Six figures, ONE database round trip. GetPlatformTotals runs a single
-                // SELECT containing six scalar subqueries rather than six separate
-                // queries, and hands the results back through out parameters because a
-                // method can only return one value. The alternative - a small class or
-                // a tuple - would be tidier OOP, and that is a fair criticism to accept
-                // if it is raised.
-                //
-                // out parameters must be declared before the call, and unlike ordinary
-                // locals they need no initial value: the compiler proves the method
-                // assigns all six before it returns.
+                // Six figures, ONE round trip: one SELECT of six scalar subqueries.
                 int pharmacies, pending, customers, orders;
-                decimal revenue, commission;
-                _reports.GetPlatformTotals(out pharmacies, out pending, out customers,
-                                           out orders, out revenue, out commission);
+                decimal revenue, commission;   // the two money figures, separate only because the type differs
+                _reports.GetPlatformTotals(out pharmacies, out pending, out customers,   // one call fills all six
+                                           out orders, out revenue, out commission);   // in the order the method declares them
 
-                // Tiles are Labels created in BuildTiles() and kept in fields, so
-                // refreshing the dashboard only rewrites their text instead of
-                // rebuilding the whole panel.
-                _tilePharmacies.Text = pharmacies.ToString();
-                _tileCustomers.Text = customers.ToString();
-                _tileOrders.Text = orders.ToString();
+                _tilePharmacies.Text = pharmacies.ToString();   // a refresh only rewrites the tile text
+                _tileCustomers.Text = customers.ToString();   // plain ToString: counts are whole numbers
+                _tileOrders.Text = orders.ToString();   // the same, so all three count tiles follow one rule
                 _tileCommission.Text = UiTheme.Money(commission);   // formats as "Tk 1,234.00"
 
-                // The pending COUNT is shown here in the subtitle rather than as a fifth
-                // tile, because it is a call to action rather than a headline figure, and
-                // it came back from the same single query as the four above it.
+                // The pending count is a call to action, so it goes in the subtitle.
                 lblHeaderSub.Text = "Gross platform revenue " + UiTheme.Money(revenue) +
-                                    "   |   " + pending + " pharmacy registration(s) waiting for approval";
+                                    "   |   " + pending + " pharmacy registration(s) waiting for approval";   // worded as work waiting, which is what it is
 
-                // DataSource does the whole binding: the DataGridView creates one column
-                // per column of the DataTable and one row per row. That is why the header
-                // texts have to be fixed AFTERWARDS, in the method on the next line, and
-                // not before - the columns do not exist until this assignment runs.
-                dgvPending.DataSource = _pharmacies.GetPending();
-                LabelPendingColumns();
+                dgvPending.DataSource = _pharmacies.GetPending();   // binding creates the columns
+                LabelPendingColumns();   // immediately after the bind, because that is when the columns exist
 
-                // The same low rated query the dedicated report form runs, called here
-                // with the two fixed defaults so the dashboard needs no controls of its
-                // own: an average below 2.5, over at least 2 reviews. The thresholds are
-                // arguments rather than constants inside the SQL, which is what lets the
-                // report form offer them as spinners without a second copy of the query.
-                dgvLowRated.DataSource = _reports.GetLowRatedPharmacies(2.5m, 2);
-                LabelLowRatedColumns();
+                dgvLowRated.DataSource = _reports.GetLowRatedPharmacies(2.5m, 2);   // below 2.5 over at least 2 reviews
+                LabelLowRatedColumns();   // the same pattern on the second grid, for the same reason
 
-                // Approve and Reject act on the CURRENT row, so with an empty queue there
-                // is nothing for them to act on. Disabling both is better than letting
-                // them be pressed and then explaining that nothing was selected.
-                bool hasPending = dgvPending.Rows.Count > 0;
-                btnApprove.Enabled = hasPending;
-                btnReject.Enabled = hasPending;
-                // An empty queue is good news, so it is worded as such rather than left as
-                // a blank grid the operator has to interpret.
+                bool hasPending = dgvPending.Rows.Count > 0;   // Approve and Reject act on the current row
+                btnApprove.Enabled = hasPending;   // disabled rather than pressed and then explained away
+                btnReject.Enabled = hasPending;   // and Reject with it, since both act on the same row
+                // An empty queue is good news, so it is worded rather than left blank.
                 lblPendingTitle.Text = hasPending
-                    ? "Pharmacies waiting for approval  (" + dgvPending.Rows.Count + ")"
-                    : "Pharmacies waiting for approval  -  none right now";
+                    ? "Pharmacies waiting for approval  (" + dgvPending.Rows.Count + ")"   // the size of the queue, without counting rows
+                    : "Pharmacies waiting for approval  -  none right now";   // reassurance, not a blank grid
             }
-            catch (Exception ex)
+            catch (Exception ex)   // caught by base type because every failure here has one remedy
             {
-                // DbHelper has already turned any SqlException into a readable sentence by
-                // the time it arrives here, so ex.Message is safe to show. Catching at the
-                // whole-method level is right for a dashboard: if any part of the load
-                // failed the screen is not trustworthy, and there is nothing useful to do
-                // with a half filled set of tiles.
+                // DbHelper has already turned a SqlException into a readable sentence.
                 MessageBox.Show("Could not load the dashboard.\r\n\r\n" + ex.Message,
-                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "PharmaLink", MessageBoxButtons.OK, MessageBoxIcon.Error);   // OK only: there is nothing to decide
             }
-            finally
+            finally   // so the cursor is restored on the success and failure paths alike
             {
-                // finally, not the end of try: an exception must not leave the operator
-                // looking at a permanent hourglass on a window that is actually usable.
-                Cursor = Cursors.Default;
+                Cursor = Cursors.Default;   // an exception must not leave a permanent hourglass
             }
         }
 
+        // Headers are set in code because the columns only exist once DataSource is set.
         private void LabelPendingColumns()
         {
-            // Guard first. Binding an empty DataTable still produces columns, but a failed
-            // load leaves none at all, and indexing Columns["PharmacyId"] on an empty
-            // collection throws. One early return covers that for the whole method.
-            if (dgvPending.Columns.Count == 0) return;
-            // The grid is bound to a DataTable, so the column keys are the SQL aliases from
-            // PharmacyService.GetPending. Renaming a column in that query without changing
-            // the string here would throw at run time, which is the cost of binding by name
-            // and the reason the aliases in the service are left alone once written.
-            dgvPending.Columns["PharmacyId"].HeaderText = "ID";
-            // FillWeight is a proportion, not a pixel width. AutoSizeColumnsMode is Fill for
-            // every grid in the application, so the columns share the width in these ratios
-            // and the layout survives the window being resized. An ID needs far less room
-            // than a pharmacy name, hence 30 against the default 100.
-            dgvPending.Columns["PharmacyId"].FillWeight = 30;
-            dgvPending.Columns["PharmacyName"].HeaderText = "Pharmacy";
-            dgvPending.Columns["OwnerName"].HeaderText = "Owner";
-            // The database column is LicenseNo, but the operator knows it as the DGDA
-            // licence, so the heading uses their vocabulary rather than the schema's.
-            dgvPending.Columns["LicenseNo"].HeaderText = "DGDA licence";
-            dgvPending.Columns["Area"].HeaderText = "Area";
-            dgvPending.Columns["ContactPhone"].HeaderText = "Contact";
-            dgvPending.Columns["RegisteredAt"].HeaderText = "Applied on";
+            if (dgvPending.Columns.Count == 0) return;   // a failed load leaves no columns to index
+            dgvPending.Columns["PharmacyId"].HeaderText = "ID";   // the keys are the SQL aliases from GetPending
+            dgvPending.Columns["PharmacyId"].FillWeight = 30;   // a proportion, not pixels; an ID needs less room
+            dgvPending.Columns["PharmacyName"].HeaderText = "Pharmacy";   // the trading name the operator scans
+            dgvPending.Columns["OwnerName"].HeaderText = "Owner";   // an alias built by joining Users
+            dgvPending.Columns["LicenseNo"].HeaderText = "DGDA licence";   // the operator's vocabulary, not the schema's
+            dgvPending.Columns["Area"].HeaderText = "Area";   // the district, which says whether a shop is needed
+            dgvPending.Columns["ContactPhone"].HeaderText = "Contact";   // the number to ring to check the licence
+            dgvPending.Columns["RegisteredAt"].HeaderText = "Applied on";   // makes a queue left to grow visible
         }
 
+        // The same job for the second grid; the two grids share no column names.
         private void LabelLowRatedColumns()
         {
-            // Same guard and the same reasoning as above, on the second grid.
-            if (dgvLowRated.Columns.Count == 0) return;
-            dgvLowRated.Columns["PharmacyId"].HeaderText = "ID";
-            dgvLowRated.Columns["PharmacyId"].FillWeight = 30;
-            dgvLowRated.Columns["PharmacyName"].HeaderText = "Pharmacy";
-            dgvLowRated.Columns["Area"].HeaderText = "Area";
-            // OwnerName and OwnerPhone are aliases the low rated query builds by joining
-            // Users to Pharmacies. They are carried so the operator can telephone the shop
-            // about its rating without leaving this screen to look the number up.
-            dgvLowRated.Columns["OwnerName"].HeaderText = "Owner";
-            dgvLowRated.Columns["OwnerPhone"].HeaderText = "Owner phone";
-            // TotalReviews is the COUNT the HAVING clause tested. Showing it matters: it is
-            // the evidence that the average beside it rests on more than one opinion.
-            dgvLowRated.Columns["TotalReviews"].HeaderText = "Reviews";
-            dgvLowRated.Columns["AverageRating"].HeaderText = "Avg rating";
-            dgvLowRated.Columns["Status"].HeaderText = "Status";
+            if (dgvLowRated.Columns.Count == 0) return;   // the same guard and reasoning as above
+            dgvLowRated.Columns["PharmacyId"].HeaderText = "ID";   // the same short heading as the pending grid
+            dgvLowRated.Columns["PharmacyId"].FillWeight = 30;   // an id is the narrowest thing on the row
+            dgvLowRated.Columns["PharmacyName"].HeaderText = "Pharmacy";   // the shop being complained about
+            dgvLowRated.Columns["Area"].HeaderText = "Area";   // so a pattern across one area is visible
+            dgvLowRated.Columns["OwnerName"].HeaderText = "Owner";   // an alias from joining Users to Pharmacies
+            dgvLowRated.Columns["OwnerPhone"].HeaderText = "Owner phone";   // the whole reason that join is there
+            dgvLowRated.Columns["TotalReviews"].HeaderText = "Reviews";   // the COUNT the HAVING clause tested
+            dgvLowRated.Columns["AverageRating"].HeaderText = "Avg rating";   // rounded to two places by the query
+            dgvLowRated.Columns["Status"].HeaderText = "Status";   // so a suspended shop is not suspended twice
         }
 
-        /// <summary>Poor performers are tinted red through the CellFormatting event.</summary>
+        /// <summary>Low rated rows are tinted red as the grid paints.</summary>
         private void dgvLowRated_CellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
-            // CellFormatting fires per cell as the grid paints, including for the header
-            // row, where RowIndex is -1. Indexing Rows[-1] would throw, so the guard is not
-            // optional defensiveness - it is the documented contract of this event.
-            if (e.RowIndex < 0) return;
-            // Every row in THIS grid is by definition a low rated shop, because the HAVING
-            // clause already filtered them, so the whole grid is tinted with no condition
-            // to test. Setting the row's DefaultCellStyle rather than e.CellStyle colours
-            // the entire row from one cell's event instead of waiting for all nine.
+            if (e.RowIndex < 0) return;   // the event fires for the header row too, where RowIndex is -1
+            // Every row here is already low rated, so the whole grid is tinted.
             dgvLowRated.Rows[e.RowIndex].DefaultCellStyle.BackColor = UiTheme.LowStockBack;
         }
 
-        // ---------------------------------------------------------------------
-        //  ACTIONS ON THE PENDING QUEUE
-        // ---------------------------------------------------------------------
+        // --------------------  ACTIONS ON THE PENDING QUEUE  --------------------
 
+        // One helper, so Approve and Reject cannot disagree on 'the selected pharmacy'.
         private int SelectedPendingPharmacyId()
         {
-            // 0 is the "nothing selected" answer, and it is safe to use as one because
-            // PharmacyId is an IDENTITY column that starts at 1, so no real shop can ever
-            // have it. That is what lets the callers test a single int instead of being
-            // handed a nullable value to unwrap.
-            if (dgvPending.CurrentRow == null) return 0;
-            // The cell value arrives boxed as object out of the DataTable, so it has to be
-            // converted. Convert.ToInt32 rather than a cast, because the underlying type is
-            // whatever the provider chose for a SQL int and a hard cast would depend on it.
+            if (dgvPending.CurrentRow == null) return 0;   // 0 is safe: PharmacyId is an IDENTITY from 1
+            // Convert.ToInt32, not a cast: the boxed type is whatever the provider chose.
             return Convert.ToInt32(dgvPending.CurrentRow.Cells["PharmacyId"].Value);
         }
 
+        // Approval feels irreversible, so this confirms with the licence number first.
         private void btnApprove_Click(object sender, EventArgs e)
         {
-            // Re-read the selection at the moment of the click rather than tracking it in a
-            // field. The row under the cursor is the only thing that can have changed since
-            // the grid was loaded, and this is the one authoritative place to read it.
-            int pharmacyId = SelectedPendingPharmacyId();
-            if (pharmacyId == 0)
+            int pharmacyId = SelectedPendingPharmacyId();   // read at click time, not tracked in a field
+            if (pharmacyId == 0)   // 0 is the no-selection answer, never a real PharmacyId
             {
-                // The button is already disabled on an empty queue, so this catches the
-                // other case: rows exist but the grid has no current row.
+                // The button is already disabled on an empty queue; this catches no current row.
                 MessageBox.Show("Select a pharmacy first.", "PharmaLink",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);   // information: nothing was attempted
+                return;   // return, so the handler ends without touching the database
             }
 
-            // Both values are read from the grid rather than re-queried, because they are
-            // only used to build the confirmation text. The decision itself travels as the
-            // id alone, so a stale name on screen cannot approve the wrong shop.
-            string name = dgvPending.CurrentRow.Cells["PharmacyName"].Value.ToString();
-            string licence = dgvPending.CurrentRow.Cells["LicenseNo"].Value.ToString();
+            string name = dgvPending.CurrentRow.Cells["PharmacyName"].Value.ToString();   // used only for the prompt text
+            string licence = dgvPending.CurrentRow.Cells["LicenseNo"].Value.ToString();   // the thing actually being checked
 
-            // The prompt states the consequence in full, including the licence number,
-            // because approval is the moment a real pharmacy is allowed to sell medicine
-            // to the public and the operator should be checking that licence, not the name.
+            // The prompt states the consequence in full, so the licence gets checked.
             DialogResult answer = MessageBox.Show(
-                "Approve " + name + "?\r\n\r\nDGDA licence: " + licence + "\r\n\r\n" +
-                "The pharmacy becomes Approved, the owner's account becomes Active and can log in, " +
-                "and the shop's medicines become visible to customers.",
-                "Approve pharmacy", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                "Approve " + name + "?\r\n\r\nDGDA licence: " + licence + "\r\n\r\n" +   // the licence is in the first line, not buried
+                "The pharmacy becomes Approved, the owner's account becomes Active and can log in, " +   // approval also unlocks the owner's login
+                "and the shop's medicines become visible to customers.",   // the customer-facing consequence
+                "Approve pharmacy", MessageBoxButtons.YesNo, MessageBoxIcon.Question);   // a decision, not a warning
 
-            // Testing for anything other than Yes, rather than testing for No, so closing
-            // the dialog with the window control also counts as a refusal.
+            // Testing for anything but Yes, so closing the dialog also counts as a refusal.
             if (answer != DialogResult.Yes) return;
 
-            // Approve runs two UPDATEs in one transaction: Pharmacies.Status becomes
-            // 'Approved' and the owner's Users.Status becomes 'Active'. It returns true
-            // when rows were affected, so nothing is announced that did not happen.
+            // Approve runs two UPDATEs in one transaction and returns true on rows affected.
             if (_pharmacies.Approve(pharmacyId))
             {
-                MessageBox.Show(name + " has been approved.", "PharmaLink",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                // Reload rather than removing the row by hand. The approved shop leaves the
-                // pending queue, the approved pharmacies tile goes up by one and the header
-                // count goes down by one, and one re-read keeps all three consistent.
-                LoadEverything();
+                MessageBox.Show(name + " has been approved.", "PharmaLink",   // named, so the right shop is visibly acted on
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);   // OK only: the decision is already made
+                LoadEverything();   // one re-read keeps queue, tile and header count consistent
             }
         }
 
+        // Rejection is the mirror image, and shorter: it changes less and is reversible.
         private void btnReject_Click(object sender, EventArgs e)
         {
-            int pharmacyId = SelectedPendingPharmacyId();
-            if (pharmacyId == 0)
+            int pharmacyId = SelectedPendingPharmacyId();   // the same helper Approve uses
+            if (pharmacyId == 0)   // and the same guard, because the empty-grid case is identical
             {
-                MessageBox.Show("Select a pharmacy first.", "PharmaLink",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                MessageBox.Show("Select a pharmacy first.", "PharmaLink",   // the same wording, so one situation reads one way
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);   // information, since nothing was attempted
+                return;   // return without touching the database
             }
 
-            string name = dgvPending.CurrentRow.Cells["PharmacyName"].Value.ToString();
+            string name = dgvPending.CurrentRow.Cells["PharmacyName"].Value.ToString();   // the prompt does not repeat the licence
 
-            // The wording explains the design rather than just asking for confirmation: a
-            // rejected registration is held at Suspended, never deleted. Deleting would
-            // free the licence number for re-registration and lose the fact that this
-            // application was ever refused, so the row stays and the decision is reversible.
+            // A rejected registration is held at Suspended, never deleted.
             DialogResult answer = MessageBox.Show(
-                "Reject " + name + "?\r\n\r\nThe registration is held at Suspended rather than deleted, " +
-                "so the licence number stays taken and the decision can be reversed.",
-                "Reject registration", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                "Reject " + name + "?\r\n\r\nThe registration is held at Suspended rather than deleted, " +   // 'reject' sounds more final than it is
+                "so the licence number stays taken and the decision can be reversed.",   // says why the record stays
+                "Reject registration", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);   // a warning: this refuses a real business
 
-            if (answer != DialogResult.Yes) return;
+            if (answer != DialogResult.Yes) return;   // anything but Yes is a refusal, closing included
 
-            // PharmacyService.Reject simply calls Suspend, because rejecting a new
-            // application and suspending a trading shop end in the same database state.
-            // One method means the two paths cannot drift apart later.
+            // Reject simply calls Suspend, so the two paths cannot drift apart later.
             if (_pharmacies.Reject(pharmacyId))
             {
-                // No success box here, unlike Approve. Rejection is visible in the queue
-                // emptying, and a confirmation dialog for a refusal adds a click without
-                // adding information.
-                LoadEverything();
+                LoadEverything();   // no success box: the queue emptying is the confirmation
             }
         }
 
+        // Double click, because this panel is a reading surface: 'take me to this shop'.
         private void dgvLowRated_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
-            // Double clicking the header row would otherwise open a form for nothing.
-            if (e.RowIndex < 0) return;
-            // Read the id from the ROW THAT WAS CLICKED, using e.RowIndex, rather than from
-            // CurrentRow. They are normally the same, but taking it from the event argument
-            // is what guarantees the form that opens is the shop the operator pointed at.
+            if (e.RowIndex < 0) return;   // a double click on the header would open a form for nothing
+            // Read from the ROW THAT WAS CLICKED, so the form matches what was pointed at.
             int pharmacyId = Convert.ToInt32(dgvLowRated.Rows[e.RowIndex].Cells["PharmacyId"].Value);
-            // Passing the id into the constructor is what pre-selects the record on the
-            // other screen, so the operator lands on the offending shop with its Suspend
-            // button already live instead of having to search for it again.
-            OpenChild(new SuperAdminManageShopsForm(pharmacyId));
+            OpenChild(new SuperAdminManageShopsForm(pharmacyId));   // the id pre-selects the shop on the other screen
         }
 
-        // ---------------------------------------------------------------------
-        //  NAVIGATION
-        // ---------------------------------------------------------------------
+        // ------------------------------  NAVIGATION  ------------------------------
 
-        /// <summary>
-        /// Every child form is opened as a modal dialog and the dashboard
-        /// refreshes when it closes, which is how the navigation diagram's
-        /// "labelled Back arrow" is implemented in practice.
-        /// </summary>
+        /// <summary>Opens a child modally, then refreshes the dashboard.</summary>
         private void OpenChild(Form child)
         {
-            // using() disposes the child form and its window handle even if it throws,
-            // which matters here because this method is called from seven different
-            // buttons and a leak would accumulate over a session.
-            using (child)
+            using (child)   // disposes the child and its handle even if it throws
             {
-                // ShowDialog, not Show. Modal means execution stops on this line until the
-                // child closes, so the line after it is guaranteed to run afterwards rather
-                // than immediately. Passing "this" as the owner also keeps the child in
-                // front of the dashboard instead of behind it.
-                child.ShowDialog(this);
+                child.ShowDialog(this);   // modal, so the next line runs only once the child closes
             }
-            // The child may have approved a shop, changed a commission rate or hidden a
-            // review, so the dashboard behind it is now stale. Refreshing here, once, means
-            // no child form has to know that a dashboard exists or how to update it.
-            LoadEverything();
+            LoadEverything();   // the child may have changed data, so refresh here, once
         }
 
-        // Expression bodied members for the seven menu handlers, because each one really is
-        // a single expression. Every child is constructed fresh on each click rather than
-        // being cached in a field, so a form that was closed and reopened cannot show data
-        // it loaded minutes ago.
+        // Each child is constructed fresh per click, so none can show minutes-old data.
         private void btnManagePharmacies_Click(object sender, EventArgs e) => OpenChild(new SuperAdminManageShopsForm(0));
-        private void btnManageUsers_Click(object sender, EventArgs e) => OpenChild(new SuperAdminManageUsersForm());
-        private void btnCategories_Click(object sender, EventArgs e) => OpenChild(new ManageCategoriesForm());
-        private void btnSalesReport_Click(object sender, EventArgs e) => OpenChild(new SuperAdminSalesReportForm());
-        private void btnLowRated_Click(object sender, EventArgs e) => OpenChild(new SuperAdminLowRatedShopsForm());
-        private void btnModerateReviews_Click(object sender, EventArgs e) => OpenChild(new ModerateReviewsForm());
+        private void btnManageUsers_Click(object sender, EventArgs e) => OpenChild(new SuperAdminManageUsersForm());   // unscoped: the operator manages every role
+        private void btnCategories_Click(object sender, EventArgs e) => OpenChild(new ManageCategoriesForm());   // shared by every pharmacy on the platform
+        private void btnSalesReport_Click(object sender, EventArgs e) => OpenChild(new SuperAdminSalesReportForm());   // opens with its own date and area filters
+        private void btnLowRated_Click(object sender, EventArgs e) => OpenChild(new SuperAdminLowRatedShopsForm());   // the full version of the panel on this screen
+        private void btnModerateReviews_Click(object sender, EventArgs e) => OpenChild(new ModerateReviewsForm());   // the only screen that can hide a review
         // Refresh alone skips OpenChild: there is no child to open, only the reload.
         private void btnRefresh_Click(object sender, EventArgs e) => LoadEverything();
 
+        // The only handler that touches static state, so the only one to clear it.
         private void btnLogout_Click(object sender, EventArgs e)
         {
-            // Logging out is confirmed because a stray click on a menu button would
-            // otherwise end the session and lose whichever queue was on screen.
+            // Confirmed, because a stray click would otherwise end the session.
             DialogResult answer = MessageBox.Show("Log out of PharmaLink?", "Log out",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);   // YesNo, so closing the dialog keeps the session
 
-            if (answer == DialogResult.Yes)
+            if (answer == DialogResult.Yes)   // only an explicit Yes ends the session
             {
-                // Clear the identity BEFORE closing. UserSession is static and outlives this
-                // form, so leaving it populated would let a stale UserId or PharmacyId be
-                // read by whatever opens next.
-                UserSession.Clear();
+                UserSession.Clear();   // static and outlives the form, so clear it BEFORE closing
                 Close();      // LoginForm is watching FormClosed and shows itself again
             }
         }
