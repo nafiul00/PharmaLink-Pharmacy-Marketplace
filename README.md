@@ -21,7 +21,7 @@ Supervised by **Dr. Md. Iftekharul Mobin**
 
 | Artefact | Link |
 |----------|------|
-| 🎥 **Demo video** | **[Watch the demonstration](REPLACE_WITH_YOUR_VIDEO_LINK)** — see [Section 18](#18-demo-video) for per-member timestamps |
+| 🎥 **Demo videos** | **[One recording per member](#18-demo-video)** — four links, listed in [Section 18](#18-demo-video) |
 | 📄 **Project report (PDF)** | [`docs/Project_Report.pdf`](docs/Project_Report.pdf) |
 | 🗄️ **Database script (SQL)** | [`PharmaLinkDB_Setup.sql`](PharmaLinkDB_Setup.sql) |
 | 🖼️ **Screenshots** | [`docs/screenshots/`](docs/screenshots) |
@@ -1455,21 +1455,18 @@ What the group takes away is that **the design decides how hard the coding will 
 
 ## 18. Demo Video
 
-**Video link:** REPLACE_WITH_YOUR_VIDEO_LINK
+The demonstration is **a separate recording for each member**, not one video divided into segments. Every member recorded and narrated their own demonstration in their own voice, so each file below is that member's individual submission and there is no timestamp to look up — the whole of a member's recording is theirs.
 
-The recording is narrated in our own voices. Each member records and speaks over the part of the project they worked on, matching the contribution table in [Section 16](#16-team-contribution), and the timestamps below are the marker the examiner uses to find that member's segment.
+| Member | ID | Recording |
+|--------|-----|-----------|
+| Nafiul Islam | 21-45717-3 | [Watch](https://drive.google.com/drive/folders/1G5s0VHixcAdFB6TXwMmv10rnVGEW_G9o?usp=share_link) |
+| Md Arafat Rahman | 22-47910-2 | [Watch](https://drive.google.com/file/d/1v8iwB8IOXfUYcrLxpBvNW0qCfDJxXsAL/view?usp=drivesdk) |
+| Muhtasim Mahin | 23-53789-3 | [Watch](https://drive.google.com/file/d/1odHrtL5HA77DPyeWsaYfVXa_htuFPwl1/view?usp=drive_link) |
+| Shohidur Raza Sujon | 22-49449-3 | [Watch](https://drive.google.com/file/d/1F1FRhb6TdEhbEXCCdMS17Zfs33YOA6L7/view?usp=drivesdk) |
 
-| # | Segment | Member | Start | End |
-|---|---------|--------|-------|-----|
-| 0 | Introduction, case study, functional requirements and user stories | Nafiul Islam | 00:00 | |
-| 1 | Database: schema, normalization to third normal form, one JOIN / GROUP BY query explained live | Md Arafat Rahman | | |
-| 2 | ER and navigation diagrams; Super Admin and Admin screens | Muhtasim Mahin | | |
-| 3 | Customer screens: search and filter, cart across two pharmacies, checkout, invoice, rating | Shohidur Raza Sujon | | |
-| 4 | Data isolation demonstrated: log in as a second owner, show the other shop's data is unreachable | *(fill in)* | | |
+Every link is shared as *anyone with the link can view*, so each one opens without signing in.
 
-> **Before recording, fill in the two `REPLACE_WITH_YOUR_VIDEO_LINK` placeholders** — one here and one in [Quick Links](#quick-links) — and complete the start and end columns above. The viva announcement asks for a link with your own voice and your individual timestamp, so an unfilled table is a failed check.
-
-### Features to demonstrate on camera
+### Required features and where they live in the app
 
 The announcement names these explicitly. Each one maps to a screen and a query in this README:
 
