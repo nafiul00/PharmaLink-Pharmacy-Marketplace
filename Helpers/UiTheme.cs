@@ -210,6 +210,23 @@ namespace PharmaLinkApp.Helpers
             return tile;
         }
 
+        /// <summary>
+        /// Adds a tile using the same 7x15 design coordinates as the designer file.
+        /// Tiles are built in Load, after WinForms has already scaled the designer
+        /// controls for the screen DPI and the form font, so raw pixel positions
+        /// would land on top of the sidebar and header. Scaling the tile by the
+        /// same factor keeps it lined up with everything else.
+        /// </summary>
+        public static void PlaceTile(Form form, Panel tile, int x, int y, int width, int height)
+        {
+            form.Controls.Add(tile);
+            tile.Bounds = new Rectangle(x, y, width, height);
+
+            SizeF current = form.CurrentAutoScaleDimensions;
+            tile.Scale(new SizeF(current.Width / 7F, current.Height / 15F));
+            tile.BringToFront();
+        }
+
         // -- validation labels -------------------------------------------------
         /// <summary>Shows a red message under a field and outlines the field in red.</summary>
         public static void ShowError(Label errorLabel, Control field, string message)

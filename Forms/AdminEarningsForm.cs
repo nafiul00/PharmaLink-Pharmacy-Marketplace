@@ -75,10 +75,7 @@ namespace PharmaLinkApp.Forms
             int x = 20;
             foreach (Panel tile in new[] { t1, t2, t3, t4 })
             {
-                tile.Location = new Point(x, 128);
-                tile.Size = new Size(288, 84);
-                Controls.Add(tile);
-                tile.BringToFront();
+                UiTheme.PlaceTile(this, tile, x, 128, 288, 84);
                 x += 302;
             }
         }
