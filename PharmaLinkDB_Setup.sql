@@ -8,8 +8,13 @@
 --  full set of sample data, so every screen in the application has something
 --  to show the moment the script finishes.
 --
---  The script is safe to run more than once: it drops the tables in foreign key
---  order before recreating them.
+--  The script is safe to run more than once and KEEPS YOUR DATA: a table or
+--  index is only created when it is missing, and the sample data is only
+--  inserted when the Users table is empty.  Accounts registered through the
+--  application therefore survive a re-run.
+--
+--  To wipe everything and start again from the sample data, change
+--  @ResetData to 1 in STEP 2 below.
 --
 --  Schema at a glance (normalised to third normal form):
 --      Users        - all three roles in one table, UserType decides the dashboard
@@ -24,6 +29,12 @@
 --      Prescriptions- uploaded prescription photograph for an Rx order
 -- =============================================================================
 
+
+-- The settings SSMS uses by default, required by the PERSISTED computed columns;
+-- set explicitly so sqlcmd (which defaults QUOTED_IDENTIFIER to OFF) works too.
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
 
 -- =============================================================================
 --  STEP 1 - CREATE DATABASE
@@ -40,8 +51,20 @@ GO
 
 
 -- =============================================================================
---  STEP 2 - DROP TABLES (children first, so the foreign keys never complain)
+--  STEP 2 - OPTIONAL RESET
+--  0 (default) keeps every existing row.  1 drops the ten tables (children
+--  first, so the foreign keys never complain) and deletes ALL data, including
+--  every account registered through the application.
 -- =============================================================================
+
+DECLARE @ResetData BIT = 0;
+
+IF @ResetData = 0
+BEGIN
+    PRINT 'Keeping existing data (set @ResetData = 1 in STEP 2 to wipe it).';
+    SET NOEXEC ON;      -- skips the DROP batch below; SET NOEXEC OFF re-enables execution
+END
+GO
 
 IF OBJECT_ID('dbo.Prescriptions', 'U') IS NOT NULL DROP TABLE dbo.Prescriptions;
 IF OBJECT_ID('dbo.Reviews',       'U') IS NOT NULL DROP TABLE dbo.Reviews;
@@ -55,9 +78,13 @@ IF OBJECT_ID('dbo.Categories',    'U') IS NOT NULL DROP TABLE dbo.Categories;
 IF OBJECT_ID('dbo.Users',         'U') IS NOT NULL DROP TABLE dbo.Users;
 GO
 
+SET NOEXEC OFF;
+GO
+
 
 -- =============================================================================
 --  STEP 3 - CREATE TABLES
+--  Each CREATE is guarded, so an existing table (and its rows) is left alone.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
@@ -68,6 +95,7 @@ GO
 --  SHA-256 of (PasswordSalt + password) and PasswordSalt holds the per user
 --  random salt.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Users', 'U') IS NULL
 CREATE TABLE Users (
     UserId          INT             IDENTITY(1,1)   NOT NULL,
     FullName        NVARCHAR(100)                   NOT NULL,
@@ -97,6 +125,7 @@ GO
 --  Master list maintained by the Super Admin.  Kept in its own table so a
 --  category name is stored once and a rename is a single UPDATE.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Categories', 'U') IS NULL
 CREATE TABLE Categories (
     CategoryId      INT             IDENTITY(1,1)   NOT NULL,
     CategoryName    NVARCHAR(60)                    NOT NULL,
@@ -115,6 +144,7 @@ GO
 --  One row per pharmacy owner.  OwnerId is UNIQUE, which is what enforces the
 --  rule that one owner owns exactly one pharmacy.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Pharmacies', 'U') IS NULL
 CREATE TABLE Pharmacies (
     PharmacyId      INT             IDENTITY(1,1)   NOT NULL,
     OwnerId         INT                             NOT NULL,
@@ -147,6 +177,7 @@ GO
 --  separate rows, each with its own price and its own stock.
 --  PharmacyId is the isolation column: every Admin side query filters on it.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Medicines', 'U') IS NULL
 CREATE TABLE Medicines (
     MedicineId      INT             IDENTITY(1,1)   NOT NULL,
     PharmacyId      INT                             NOT NULL,
@@ -185,6 +216,7 @@ GO
 --  MedicineId) is what makes "add the same medicine twice" an update of the
 --  quantity rather than a duplicate line.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Cart', 'U') IS NULL
 CREATE TABLE Cart (
     CartId          INT             IDENTITY(1,1)   NOT NULL,
     CustomerId      INT                             NOT NULL,
@@ -209,6 +241,7 @@ GO
 --  CommissionAmount is frozen here at checkout time, so a price change next
 --  month can never rewrite what was owed on last month's sales.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Orders', 'U') IS NULL
 CREATE TABLE Orders (
     OrderId         INT             IDENTITY(1001,1) NOT NULL,   -- invoices start at 1001
     CustomerId      INT                             NOT NULL,
@@ -242,6 +275,7 @@ GO
 --  medicine appears in many orders; this table resolves that many to many
 --  relationship and stores the price on the day of purchase.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.OrderItems', 'U') IS NULL
 CREATE TABLE OrderItems (
     OrderItemId     INT             IDENTITY(1,1)   NOT NULL,
     OrderId         INT                             NOT NULL,
@@ -266,6 +300,7 @@ GO
 --  customer who actually received the medicine can rate it, and only once.
 --  Moderation sets IsHidden = 1 instead of deleting, so the audit trail stays.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Reviews', 'U') IS NULL
 CREATE TABLE Reviews (
     ReviewId        INT             IDENTITY(1,1)   NOT NULL,
     CustomerId      INT                             NOT NULL,
@@ -296,6 +331,7 @@ GO
 --  discounted price is always calculated inside the query, so the offers
 --  screen, the details screen, the cart and the invoice can never disagree.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Offers', 'U') IS NULL
 CREATE TABLE Offers (
     OfferId         INT             IDENTITY(1,1)   NOT NULL,
     MedicineId      INT                             NOT NULL,
@@ -320,6 +356,7 @@ GO
 --  when the basket contains a medicine whose RequiresRx flag is set.  The
 --  pharmacy owner approves or rejects it before the order can be confirmed.
 -- -----------------------------------------------------------------------------
+IF OBJECT_ID('dbo.Prescriptions', 'U') IS NULL
 CREATE TABLE Prescriptions (
     PrescriptionId  INT             IDENTITY(1,1)   NOT NULL,
     OrderId         INT                             NOT NULL,
@@ -340,22 +377,34 @@ GO
 
 
 -- =============================================================================
+--  STEP 3b - UPGRADE TABLES CREATED BY AN OLDER VERSION OF THIS SCRIPT
+--  Adds columns introduced later, so an existing database keeps its rows and
+--  still matches what the application's queries expect.
+-- =============================================================================
+
+IF COL_LENGTH('dbo.Reviews', 'IsReported') IS NULL
+    ALTER TABLE dbo.Reviews ADD IsReported BIT NOT NULL
+        CONSTRAINT DF_Reviews_Reported DEFAULT (0);
+GO
+
+
+-- =============================================================================
 --  STEP 4 - INDEXES
 --  The columns the application filters and joins on most often.
 -- =============================================================================
 
-CREATE INDEX IX_Medicines_Pharmacy  ON Medicines(PharmacyId);
-CREATE INDEX IX_Medicines_Category  ON Medicines(CategoryId);
-CREATE INDEX IX_Medicines_Name      ON Medicines(MedicineName);
-CREATE INDEX IX_Medicines_Generic   ON Medicines(GenericName);
-CREATE INDEX IX_Orders_Customer     ON Orders(CustomerId);
-CREATE INDEX IX_Orders_Pharmacy     ON Orders(PharmacyId);
-CREATE INDEX IX_Orders_Date         ON Orders(OrderDate);
-CREATE INDEX IX_OrderItems_Order    ON OrderItems(OrderId);
-CREATE INDEX IX_OrderItems_Medicine ON OrderItems(MedicineId);
-CREATE INDEX IX_Reviews_Medicine    ON Reviews(MedicineId);
-CREATE INDEX IX_Offers_Medicine     ON Offers(MedicineId);
-CREATE INDEX IX_Cart_Customer       ON Cart(CustomerId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Medicines_Pharmacy')  CREATE INDEX IX_Medicines_Pharmacy  ON Medicines(PharmacyId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Medicines_Category')  CREATE INDEX IX_Medicines_Category  ON Medicines(CategoryId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Medicines_Name')      CREATE INDEX IX_Medicines_Name      ON Medicines(MedicineName);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Medicines_Generic')   CREATE INDEX IX_Medicines_Generic   ON Medicines(GenericName);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Orders_Customer')     CREATE INDEX IX_Orders_Customer     ON Orders(CustomerId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Orders_Pharmacy')     CREATE INDEX IX_Orders_Pharmacy     ON Orders(PharmacyId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Orders_Date')         CREATE INDEX IX_Orders_Date         ON Orders(OrderDate);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_OrderItems_Order')    CREATE INDEX IX_OrderItems_Order    ON OrderItems(OrderId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_OrderItems_Medicine') CREATE INDEX IX_OrderItems_Medicine ON OrderItems(MedicineId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Reviews_Medicine')    CREATE INDEX IX_Reviews_Medicine    ON Reviews(MedicineId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Offers_Medicine')     CREATE INDEX IX_Offers_Medicine     ON Offers(MedicineId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Cart_Customer')       CREATE INDEX IX_Cart_Customer       ON Cart(CustomerId);
 GO
 
 
@@ -382,7 +431,17 @@ GO
 --
 --  PasswordHash is Base64( SHA-256( PasswordSalt + password ) ), exactly what
 --  Helpers/PasswordHelper.cs computes, so these accounts log in straight away.
+--
+--  Inserted only into an EMPTY database.  When Users already has rows, every
+--  batch up to STEP 6 is skipped, so registered accounts are never touched.
 -- =============================================================================
+
+IF EXISTS (SELECT 1 FROM dbo.Users)
+BEGIN
+    PRINT 'Sample data skipped: the Users table already has rows, so nothing was overwritten.';
+    SET NOEXEC ON;      -- skips every sample data batch until SET NOEXEC OFF in STEP 6
+END
+GO
 
 SET IDENTITY_INSERT Users ON;
 INSERT INTO Users (UserId, FullName, Email, PasswordHash, PasswordSalt, Phone, Address, UserType, Status) VALUES
@@ -549,7 +608,10 @@ GO
 --  A quick sanity check so you can see the script did what it promised.
 -- =============================================================================
 
-SELECT 'Users' AS TableName, COUNT(*) AS [RowsInserted] FROM Users
+SET NOEXEC OFF;
+GO
+
+SELECT 'Users' AS TableName, COUNT(*) AS [RowCount] FROM Users
 UNION ALL SELECT 'Categories',    COUNT(*) FROM Categories
 UNION ALL SELECT 'Pharmacies',    COUNT(*) FROM Pharmacies
 UNION ALL SELECT 'Medicines',     COUNT(*) FROM Medicines

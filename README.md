@@ -1280,10 +1280,10 @@ PharmaLink-Pharmacy-Marketplace/
 Open **`PharmaLinkDB_Setup.sql`** in SQL Server Management Studio and press **Execute**. The script:
 
 1. creates the `PharmaLinkDB` database,
-2. drops the ten tables in foreign key order so it is safe to re-run,
-3. creates all ten tables with every primary key, foreign key, `UNIQUE` and `CHECK` constraint,
-4. creates the supporting indexes,
-5. inserts sample data — 1 Super Admin, 4 pharmacy owners, 4 customers, 10 categories, 24 medicines, 7 orders with 11 line items, 7 reviews, 4 offers, 1 pending prescription and a 2 line cart,
+2. keeps any existing data — a re-run never deletes accounts registered through the app (set `@ResetData = 1` in STEP 2 only when you want to wipe everything),
+3. creates any of the ten tables that are missing, with every primary key, foreign key, `UNIQUE` and `CHECK` constraint,
+4. creates the supporting indexes that are missing,
+5. inserts sample data into an empty database only — 1 Super Admin, 4 pharmacy owners, 4 customers, 10 categories, 24 medicines, 7 orders with 11 line items, 7 reviews, 4 offers, 1 pending prescription and a 2 line cart,
 6. prints a row count per table so you can see it worked.
 
 ### Step 2 — Point the application at your server
@@ -1502,7 +1502,7 @@ Everything an examiner needs to get the project running on a fresh machine, in o
 
 ### Database engine
 
-Microsoft SQL Server 2019 or newer. SQL Server Express, Developer Edition and LocalDB all work unchanged. The database is named **`PharmaLinkDB`** and is created in full — schema, constraints, indexes and sample data — by [`PharmaLinkDB_Setup.sql`](PharmaLinkDB_Setup.sql). The script drops the ten tables in foreign key order before recreating them, so it is safe to run more than once.
+Microsoft SQL Server 2019 or newer. SQL Server Express, Developer Edition and LocalDB all work unchanged. The database is named **`PharmaLinkDB`** and is created in full — schema, constraints, indexes and sample data — by [`PharmaLinkDB_Setup.sql`](PharmaLinkDB_Setup.sql). The script only creates what is missing and only seeds an empty database, so it is safe to run more than once without losing registered accounts or orders; setting `@ResetData = 1` drops and recreates everything from the sample data.
 
 ### Connection string — file and line
 
